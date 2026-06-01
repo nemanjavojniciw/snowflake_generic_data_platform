@@ -1,0 +1,56 @@
+-- GENERATED FILE — DO NOT EDIT MANUALLY
+-- source: {{ source_name }} | table: {{ table_name }} | strategy: incremental
+-- generated_at: {{ generated_at }}
+
+{{
+    config(
+        materialized='incremental',
+        unique_key=primary_keys[0] if primary_keys else 'id',
+        on_schema_change='sync_all_columns',
+        incremental_strategy='merge'
+    )
+}}
+
+with bronze as (
+    select * from {{ ref(source_name + '__' + table_name) }}
+
+    {% if is_incremental() %}
+    where _extracted_at > (select coalesce(max(_extracted_at), '1900-01-01'::timestamp_ntz) from {{ this }})
+    {% endif %}
+),
+
+deduped as (
+    select
+{% for col_name, col_info in columns.items() %}
+{% if col_name not in ['_airbyte_raw_id', '_airbyte_extracted_at', '_airbyte_loaded_at', '_airbyte_data', '_bronze_created_at'] %}
+        {{ col_name }},
+{% endif %}
+{% endfor %}
+        _raw_id,
+        _extracted_at,
+        _loaded_at,
+        row_number() over (
+            partition by {{ primary_keys | join(', ') if primary_keys else 'id' }}
+            order by _extracted_at desc
+        ) as _rn
+
+    from bronze
+),
+
+silver as (
+    select
+{% for col_name, col_info in columns.items() %}
+{% if col_name not in ['_airbyte_raw_id', '_airbyte_extracted_at', '_airbyte_loaded_at', '_airbyte_data', '_bronze_created_at'] %}
+        {{ col_name }},
+{% endif %}
+{% endfor %}
+        _raw_id,
+        _extracted_at,
+        _loaded_at,
+        current_timestamp() as _platform_updated_at
+
+    from deduped
+    where _rn = 1
+)
+
+select * from silver

@@ -1,0 +1,140 @@
+# Snowflake Generic Data Platform — Integrated Local Docker Stack
+#
+# Services:
+#   - Airbyte OSS (web, server, worker, PostgreSQL, Redis)
+#   - Airflow (LocalExecutor + Postgres)
+#   - Platform init services (Snowflake setup, health checks)
+#
+# Run from repo root (compose file is in compose/):
+#   docker compose -f compose/docker-compose.yml up -d
+#   docker compose -f compose/docker-compose.yml logs -f
+#   docker compose -f compose/docker-compose.yml down
+#   docker compose -f compose/docker-compose.yml down -v
+#
+# Access:
+#   Airbyte UI → http://localhost:8000  (user: airbytetemp@gmail.com, get password with 'abctl local credentials' or from logs)
+#   Airflow UI → http://localhost:8080  (user: admin, password: admin)
+#   Airbyte API → http://airbyte-server:8001/api/v1 (from inside containers)
+#   Health check → docker compose logs platform-init
+
+x-airflow-common:
+  &airflow-common
+  build:
+    context: ../airflow
+    dockerfile: Dockerfile
+  environment:
+    &airflow-common-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+    AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW__CORE__FERNET_KEY:-}
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__API__AUTH_BACKENDS: "airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session"
+    AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "true"
+    # Platform env vars forwarded into Airflow containers
+    SNOWFLAKE_ACCOUNT: ${SNOWFLAKE_ACCOUNT}
+    SNOWFLAKE_USER: ${SNOWFLAKE_USER}
+    SNOWFLAKE_PASSWORD: ${SNOWFLAKE_PASSWORD}
+    SNOWFLAKE_ROLE: ${SNOWFLAKE_ROLE}
+    SNOWFLAKE_WAREHOUSE: ${SNOWFLAKE_WAREHOUSE}
+    SNOWFLAKE_DATABASE: ${SNOWFLAKE_DATABASE:-PLATFORM}
+    AIRBYTE_API_URL: ${AIRBYTE_API_URL:-http://host.docker.internal:8000/api/v1}
+    AIRBYTE_USERNAME: ${AIRBYTE_USERNAME:-airbyte}
+    AIRBYTE_PASSWORD: ${AIRBYTE_PASSWORD:-password}
+    GIT_REPO_URL: ${GIT_REPO_URL:-}
+    GIT_TOKEN: ${GIT_TOKEN:-}
+    GIT_BRANCH: ${GIT_BRANCH:-main}
+  volumes:
+    - ../airflow/dags:/opt/airflow/dags
+    - ../airflow/logs:/opt/airflow/logs
+    - ../airflow/plugins:/opt/airflow/plugins
+    - ../airflow/config:/opt/airflow/config
+    - ../platform:/opt/airflow/platform       # platform services available in DAGs
+    - ../dbt_project:/opt/dbt                 # dbt project available in containers
+    - ../sources:/opt/sources                 # source_metadata.yml files
+  depends_on:
+    postgres:
+      condition: service_healthy
+
+services:
+  # ── Airflow metadata database ────────────────────────────────────────────────
+  postgres:
+    image: postgres:15.18-alpine
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - postgres-db-volume:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 10s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped
+
+  # ── Airflow init (runs once to migrate DB and create admin user) ─────────────
+  airflow-init:
+    <<: *airflow-common
+    command:
+      - bash
+      - -c
+      - |
+        airflow db migrate
+        airflow users create \
+          --username "${AIRFLOW_ADMIN_USER:-admin}" \
+          --firstname Platform --lastname Admin \
+          --role Admin \
+          --email admin@platform.local \
+          --password "${AIRFLOW_ADMIN_PASSWORD:-admin}" || true
+    restart: "no"
+
+  # ── Airflow webserver ────────────────────────────────────────────────────────
+  airflow-webserver:
+    <<: *airflow-common
+    command: webserver
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+
+  # ── Airflow scheduler ────────────────────────────────────────────────────────
+  airflow-scheduler:
+    <<: *airflow-common
+    command: scheduler
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8974/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+
+  # ── Airflow triggerer (async sensor support) ─────────────────────────────────
+  airflow-triggerer:
+    <<: *airflow-common
+    command: triggerer
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+
+volumes:
+  postgres-db-volume:

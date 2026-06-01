@@ -1,0 +1,18 @@
+# Packages installed INTO the Airflow Docker image (on top of apache/airflow:2.10.5-python3.11)
+# All versions pinned to latest stable as of 2026-06-01.
+
+# Airbyte + dbt integrations
+apache-airflow-providers-airbyte==5.5.0
+astronomer-cosmos==1.14.2
+
+# dbt (used by astronomer-cosmos inside Airflow)
+dbt-core==1.11.11
+dbt-snowflake==1.11.5
+
+# Platform service deps
+snowflake-connector-python==4.6.0
+Jinja2==3.1.6
+PyYAML==6.0.3
+gitpython==3.1.50
+python-dotenv==1.2.2
+elementary-data==0.24.0

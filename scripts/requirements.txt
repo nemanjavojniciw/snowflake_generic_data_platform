@@ -1,0 +1,23 @@
+# Platform scripts, dbt, and CLI — installed in .venv
+# Airflow itself runs in Docker; see airflow/requirements.txt for container deps.
+# All versions pinned to latest stable as of 2026-06-01.
+
+# ── dbt ───────────────────────────────────────────────────────────────────────
+dbt-core==1.11.11
+dbt-snowflake==1.11.5
+
+# ── Snowflake ──────────────────────────────────────────────────────────────────
+snowflake-connector-python==4.6.0
+
+# ── Platform core ─────────────────────────────────────────────────────────────
+Jinja2==3.1.6
+PyYAML==6.0.3
+gitpython==3.1.50
+python-dotenv==1.2.2
+
+# ── Platform CLI ──────────────────────────────────────────────────────────────
+click==8.4.1
+rich==15.0.0
+
+# ── Data quality (dbt package installed via dbt deps, not pip) ────────────────
+elementary-data==0.24.0

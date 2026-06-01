@@ -1,0 +1,28 @@
+-- GENERATED FILE — DO NOT EDIT MANUALLY
+-- source: {{ source_name }} | table: {{ table_name }}
+-- generated_at: {{ generated_at }} | schema_hash: {{ schema_hash }}
+
+with source as (
+    select * from {{ source('raw_' + source_name, table_name) }}
+),
+
+bronze as (
+    select
+        -- platform metadata
+        _airbyte_raw_id         as _raw_id,
+        _airbyte_extracted_at   as _extracted_at,
+        _airbyte_loaded_at      as _loaded_at,
+
+        -- source columns
+{% for col_name, col_info in columns.items() %}
+{% if col_name not in ['_airbyte_raw_id', '_airbyte_extracted_at', '_airbyte_loaded_at', '_airbyte_data'] %}
+        {{ col_name }},
+{% endif %}
+{% endfor %}
+
+        current_timestamp()     as _bronze_created_at
+
+    from source
+)
+
+select * from bronze

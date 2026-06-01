@@ -1,0 +1,21 @@
+name: snowflake_platform
+version: "1.0.0"
+config-version: 2
+
+profile: snowflake_platform
+
+model-paths: ["models"]
+macro-paths: ["macros"]
+target-path: "target"
+clean-targets: ["target", "dbt_packages"]
+
+models:
+  snowflake_platform:
+    bronze:
+      +schema: BRONZE
+      +materialized: view
+      +tags: ["bronze", "generated"]
+    silver:
+      +schema: SILVER
+      +materialized: incremental
+      +tags: ["silver", "generated"]
