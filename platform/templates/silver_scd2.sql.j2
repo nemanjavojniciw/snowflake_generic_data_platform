@@ -4,6 +4,7 @@
 -- tracked columns: {{ tracked_columns | join(', ') }}
 
 {% snapshot snapshot_table_name %}
+    {# cluster_by=cluster_keys -- auto clustering disabled #}
     {{
         config(
             target_schema='silver',

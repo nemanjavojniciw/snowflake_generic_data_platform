@@ -12,10 +12,10 @@ clean-targets: ["target", "dbt_packages"]
 models:
   snowflake_platform:
     bronze:
-      +schema: BRONZE
+      +schema: GENERIC_BRONZE
       +materialized: view
       +tags: ["bronze", "generated"]
     silver:
-      +schema: SILVER
+      +schema: GENERIC_SILVER
       +materialized: incremental
       +tags: ["silver", "generated"]

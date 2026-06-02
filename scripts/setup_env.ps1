@@ -140,8 +140,22 @@ if (-not (Get-Command nvm -ErrorAction SilentlyContinue)) {
 if (Get-Command nvm -ErrorAction SilentlyContinue) {
     Write-Info "Ensuring Node.js $NODE_VERSION is installed..."
     nvm install $NODE_VERSION | Out-Null
-    nvm use $NODE_VERSION | Out-Null
-    Reload-Path
+
+    # nvm use creates/updates a symlink — requires admin on Windows.
+    # Skip it if the correct version is already active; warn instead of prompting UAC.
+    $isAdmin       = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    $activeVersion = if (Get-Command node -ErrorAction SilentlyContinue) { node --version 2>&1 } else { "" }
+
+    if ($activeVersion -like "v$NODE_VERSION*") {
+        Write-OK "Node.js $activeVersion already active — skipping 'nvm use'"
+    } elseif ($isAdmin) {
+        nvm use $NODE_VERSION | Out-Null
+        Reload-Path
+    } else {
+        Write-Warn "Node.js $NODE_VERSION installed but 'nvm use' requires admin to switch the active version."
+        Write-Warn "Either rerun this script as Administrator, or run manually: nvm use $NODE_VERSION"
+    }
+
     # nvm symlink dir may not be in PATH yet in this session
     $nvmSymlink = [System.Environment]::GetEnvironmentVariable("NVM_SYMLINK", "User")
     if ($nvmSymlink -and (Test-Path $nvmSymlink) -and ($env:PATH -notlike "*$nvmSymlink*")) {

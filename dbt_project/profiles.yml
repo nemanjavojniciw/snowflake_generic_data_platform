@@ -11,7 +11,7 @@ snowflake_platform:
       password: "{{ env_var('SNOWFLAKE_PASSWORD') }}"
       role: "{{ env_var('SNOWFLAKE_ROLE', 'PLATFORM_ADMIN') }}"
       warehouse: "{{ env_var('SNOWFLAKE_WAREHOUSE', 'TRANSFORM_WH') }}"
-      database: RAW
+      database: GENERIC_AIRBYTE_LANDING
       schema: public
       threads: 4
       client_session_keep_alive: false
@@ -22,7 +22,7 @@ snowflake_platform:
       password: "{{ env_var('SNOWFLAKE_PASSWORD') }}"
       role: "{{ env_var('SNOWFLAKE_ROLE', 'PLATFORM_ADMIN') }}"
       warehouse: "{{ env_var('SNOWFLAKE_WAREHOUSE', 'TRANSFORM_WH') }}"
-      database: RAW
+      database: GENERIC_AIRBYTE_LANDING
       schema: public
       threads: 8
       client_session_keep_alive: false

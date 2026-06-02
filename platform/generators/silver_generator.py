@@ -141,6 +141,7 @@ class SilverGenerator:
 
         primary_keys = table_meta.get("primary_key", [])
         tracked_columns = table_meta.get("scd2_columns", [])
+        # cluster_keys = self._get_cluster_keys(primary_keys)
 
         template_name = self.STRATEGY_TEMPLATES[strategy]
         template = self._load_template(template_name)
@@ -151,6 +152,7 @@ class SilverGenerator:
             columns=columns,
             primary_keys=primary_keys,
             tracked_columns=tracked_columns,
+            # cluster_keys=cluster_keys,
             generated_at=generated_at,
         )
 
@@ -161,6 +163,14 @@ class SilverGenerator:
         self.git.write_file(model_path, sql)
         print(f"  ✅ {model_path} ({strategy})")
         return model_path
+
+    # def _get_cluster_keys(self, primary_keys: list) -> list:
+    #     base = ["_extracted_at"]
+    #     if primary_keys:
+    #         base.extend(primary_keys[:2])
+    #     elif "id" not in base:
+    #         base.append("id")
+    #     return base[:3]
 
     def _generate_schema_yml(
         self,

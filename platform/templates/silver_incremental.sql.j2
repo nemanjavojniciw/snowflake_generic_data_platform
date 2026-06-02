@@ -2,6 +2,7 @@
 -- source: {{ source_name }} | table: {{ table_name }} | strategy: incremental
 -- generated_at: {{ generated_at }}
 
+{# cluster_by=cluster_keys -- auto clustering disabled #}
 {{
     config(
         materialized='incremental',

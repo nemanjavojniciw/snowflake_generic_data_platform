@@ -54,13 +54,13 @@ def check_snowflake() -> bool:
         cursor = conn.cursor()
 
         # Check databases
-        cursor.execute("SHOW DATABASES LIKE 'RAW'")
+        cursor.execute("SHOW DATABASES LIKE 'GENERIC_AIRBYTE_LANDING'")
         if not cursor.fetchall():
-            print(f"{YELLOW}⚠ RAW database not found — run: python platform/scripts/init_snowflake.py{RESET}")
+            print(f"{YELLOW}⚠ GENERIC_AIRBYTE_LANDING database not found — run: python platform/scripts/init_snowflake.py{RESET}")
             return False
 
         # Check schema registry table
-        cursor.execute("SELECT COUNT(*) FROM PLATFORM.PUBLIC.schema_registry")
+        cursor.execute("SELECT COUNT(*) FROM GENERIC_PLATFORM.PUBLIC.schema_registry")
         count = cursor.fetchone()[0]
         print(f"{GREEN}✓ Snowflake connected (account={account}, schema_registry has {count} rows){RESET}")
 

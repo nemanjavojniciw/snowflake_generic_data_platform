@@ -95,7 +95,7 @@ class SchemaRegistry:
         sql = """
             SELECT source_name, airbyte_connection_id, sync_schedule, business_owner,
                    is_active, last_synced_at
-            FROM PLATFORM.PUBLIC.source_catalog
+            FROM GENERIC_PLATFORM.PUBLIC.source_catalog
             WHERE is_active = TRUE
             ORDER BY source_name
         """
@@ -116,7 +116,7 @@ class SchemaRegistry:
         sql = """
             SELECT source_name, table_name, columns, primary_keys, load_strategy,
                    schema_hash, business_owner, is_active
-            FROM PLATFORM.PUBLIC.schema_registry
+            FROM GENERIC_PLATFORM.PUBLIC.schema_registry
             WHERE source_name = %s
               AND is_active = TRUE
             ORDER BY table_name
@@ -137,7 +137,7 @@ class SchemaRegistry:
         """
         sql = """
             SELECT *
-            FROM PLATFORM.PUBLIC.schema_registry
+            FROM GENERIC_PLATFORM.PUBLIC.schema_registry
             WHERE source_name = %s AND table_name = %s
         """
         cursor = self._execute(sql, (source_name, table_name))
@@ -159,7 +159,7 @@ class SchemaRegistry:
         sql = """
             SELECT source_name, table_name, columns, primary_keys, load_strategy,
                    change_history, last_changed_at
-            FROM PLATFORM.PUBLIC.schema_registry
+            FROM GENERIC_PLATFORM.PUBLIC.schema_registry
             WHERE last_changed_at >= %s
             ORDER BY source_name, table_name
         """
@@ -201,7 +201,7 @@ class SchemaRegistry:
         if not existing:
             # New table — insert
             sql = """
-                INSERT INTO PLATFORM.PUBLIC.schema_registry (
+                INSERT INTO GENERIC_PLATFORM.PUBLIC.schema_registry (
                     source_name, table_name, columns, primary_keys, load_strategy,
                     schema_hash, business_owner, airbyte_connection_id, last_seen_at, last_changed_at
                 )
@@ -280,7 +280,7 @@ class SchemaRegistry:
             )
 
             sql = """
-                UPDATE PLATFORM.PUBLIC.schema_registry
+                UPDATE GENERIC_PLATFORM.PUBLIC.schema_registry
                 SET columns = %s,
                     primary_keys = %s,
                     load_strategy = COALESCE(%s, load_strategy),
@@ -307,7 +307,7 @@ class SchemaRegistry:
         else:
             # No schema change — just update last_seen_at
             sql = """
-                UPDATE PLATFORM.PUBLIC.schema_registry
+                UPDATE GENERIC_PLATFORM.PUBLIC.schema_registry
                 SET last_seen_at = CURRENT_TIMESTAMP(),
                     primary_keys = COALESCE(%s, primary_keys),
                     load_strategy = COALESCE(%s, load_strategy),
@@ -344,7 +344,7 @@ class SchemaRegistry:
             business_owner: Team/email
         """
         sql = """
-            INSERT INTO PLATFORM.PUBLIC.source_catalog (
+            INSERT INTO GENERIC_PLATFORM.PUBLIC.source_catalog (
                 source_name, airbyte_connection_id, sync_schedule, business_owner
             )
             VALUES (%s, %s, %s, %s)
