@@ -17,11 +17,11 @@ Usage:
 import json
 from typing import Optional
 
-from platform.catalog_syncer import CatalogSyncer
-from platform.generators.bronze_generator import BronzeGenerator
-from platform.generators.silver_generator import SilverGenerator
-from platform.git_client import GitClient
-from platform.registry import SchemaRegistry
+from sgdp.catalog_syncer import CatalogSyncer
+from sgdp.generators.bronze_generator import BronzeGenerator
+from sgdp.generators.silver_generator import SilverGenerator
+from sgdp.git_client import GitClient
+from sgdp.registry import SchemaRegistry
 
 
 class EvolutionHandler:

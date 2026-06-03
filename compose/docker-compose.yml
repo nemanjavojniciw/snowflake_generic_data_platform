@@ -39,17 +39,19 @@ x-airflow-common:
     SNOWFLAKE_WAREHOUSE: ${SNOWFLAKE_WAREHOUSE}
     SNOWFLAKE_DATABASE: ${SNOWFLAKE_DATABASE:-PLATFORM}
     AIRBYTE_API_URL: ${AIRBYTE_API_URL:-http://host.docker.internal:8000/api/v1}
-    AIRBYTE_USERNAME: ${AIRBYTE_USERNAME:-airbyte}
-    AIRBYTE_PASSWORD: ${AIRBYTE_PASSWORD:-password}
+    AIRBYTE_CLIENT_ID: ${AIRBYTE_CLIENT_ID}
+    AIRBYTE_CLIENT_SECRET: ${AIRBYTE_CLIENT_SECRET}
     GIT_REPO_URL: ${GIT_REPO_URL:-}
     GIT_TOKEN: ${GIT_TOKEN:-}
     GIT_BRANCH: ${GIT_BRANCH:-main}
+    # Auto-configure the Airbyte Airflow connection — no manual UI step needed
+    AIRFLOW_CONN_AIRBYTE_LOCAL: "airbyte://${AIRBYTE_CLIENT_ID}:${AIRBYTE_CLIENT_SECRET}@host.docker.internal:8000"
   volumes:
     - ../airflow/dags:/opt/airflow/dags
     - ../airflow/logs:/opt/airflow/logs
     - ../airflow/plugins:/opt/airflow/plugins
     - ../airflow/config:/opt/airflow/config
-    - ../platform:/opt/airflow/platform       # platform services available in DAGs
+    - ../sgdp:/opt/airflow/sgdp               # platform services available in DAGs
     - ../dbt_project:/opt/dbt                 # dbt project available in containers
     - ../sources:/opt/sources                 # source_metadata.yml files
   depends_on:

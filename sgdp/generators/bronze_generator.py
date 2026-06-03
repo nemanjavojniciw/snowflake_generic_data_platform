@@ -20,8 +20,8 @@ from typing import Optional
 
 from jinja2 import Environment, FileSystemLoader, TemplateNotFound
 
-from platform.git_client import GitClient
-from platform.registry import SchemaRegistry
+from sgdp.git_client import GitClient
+from sgdp.registry import SchemaRegistry
 
 
 class BronzeGenerator:
@@ -35,7 +35,7 @@ class BronzeGenerator:
             repo_path: Path to dbt + git repo. If None, uses current directory.
         """
         self.repo_path = Path(repo_path or ".")
-        self.templates_dir = self.repo_path / "platform" / "templates"
+        self.templates_dir = Path(__file__).parent.parent / "templates"
         self.registry = SchemaRegistry()
         self.git = GitClient(str(self.repo_path))
 

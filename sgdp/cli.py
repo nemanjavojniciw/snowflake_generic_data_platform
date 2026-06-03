@@ -28,11 +28,11 @@ from typing import Optional
 import click
 import yaml
 
-from platform.catalog_syncer import CatalogSyncer
-from platform.evolution_handler import EvolutionHandler
-from platform.generators.bronze_generator import BronzeGenerator
-from platform.generators.silver_generator import SilverGenerator
-from platform.registry import SchemaRegistry
+from sgdp.catalog_syncer import CatalogSyncer
+from sgdp.evolution_handler import EvolutionHandler
+from sgdp.generators.bronze_generator import BronzeGenerator
+from sgdp.generators.silver_generator import SilverGenerator
+from sgdp.registry import SchemaRegistry
 
 # Color codes
 GREEN = "\033[92m"
@@ -500,7 +500,7 @@ def init():
         print_header("Initializing Snowflake")
 
         result = subprocess.run(
-            ["python", "platform/scripts/init_snowflake.py"],
+            ["python", "sgdp/scripts/init_snowflake.py"],
             cwd=".",
         )
 

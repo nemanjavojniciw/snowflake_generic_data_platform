@@ -37,12 +37,12 @@ from airflow.utils.task_group import TaskGroup
 import sys
 from pathlib import Path
 
-# Add platform to path
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+# Add platform to path — sgdp is mounted at /opt/airflow/sgdp
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from platform.registry import SchemaRegistry
-from platform.catalog_syncer import CatalogSyncer
-from platform.evolution_handler import EvolutionHandler
+from sgdp.registry import SchemaRegistry
+from sgdp.catalog_syncer import CatalogSyncer
+from sgdp.evolution_handler import EvolutionHandler
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Configuration

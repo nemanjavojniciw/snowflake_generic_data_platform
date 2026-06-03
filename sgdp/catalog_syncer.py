@@ -21,7 +21,7 @@ from typing import Optional
 
 import requests
 
-from platform.registry import SchemaRegistry
+from sgdp.registry import SchemaRegistry
 
 
 class CatalogSyncer:
@@ -30,28 +30,55 @@ class CatalogSyncer:
     def __init__(self):
         """Initialize with Airbyte API credentials from environment."""
         self.api_url = os.getenv("AIRBYTE_API_URL", "http://localhost:8000/api/v1")
-        self.username = os.getenv("AIRBYTE_EMAIL")
-        self.password = os.getenv("AIRBYTE_PASSWORD")
+        self.client_id = os.getenv("AIRBYTE_CLIENT_ID")
+        self.client_secret = os.getenv("AIRBYTE_CLIENT_SECRET")
 
-        if not all([self.username, self.password]):
+        if not all([self.client_id, self.client_secret]):
             raise ValueError(
-                "Missing Airbyte credentials. Set: AIRBYTE_EMAIL, AIRBYTE_PASSWORD"
+                "Missing Airbyte credentials. Set: AIRBYTE_CLIENT_ID, AIRBYTE_CLIENT_SECRET"
             )
 
-        self.auth = (self.username, self.password)
+        self._access_token: Optional[str] = None
         self.registry = SchemaRegistry()
+
+    def _get_token(self) -> str:
+        """Fetch an OAuth2 bearer token using client credentials."""
+        resp = requests.post(
+            f"{self.api_url}/applications/token",
+            data={
+                "grant_type": "client_credentials",
+                "client_id": self.client_id,
+                "client_secret": self.client_secret,
+            },
+            timeout=30,
+        )
+        resp.raise_for_status()
+        return resp.json()["access_token"]
+
+    def _headers(self) -> dict:
+        """Return auth headers, refreshing the token if needed."""
+        if not self._access_token:
+            self._access_token = self._get_token()
+        return {"Authorization": f"Bearer {self._access_token}"}
 
     def _get(self, endpoint: str, **kwargs) -> dict:
         """GET request to Airbyte API."""
         url = f"{self.api_url}{endpoint}"
-        resp = requests.get(url, auth=self.auth, timeout=30, **kwargs)
+        resp = requests.get(url, headers=self._headers(), timeout=30, **kwargs)
+        if resp.status_code == 401:
+            # Token expired — refresh once and retry
+            self._access_token = self._get_token()
+            resp = requests.get(url, headers=self._headers(), timeout=30, **kwargs)
         resp.raise_for_status()
         return resp.json()
 
     def _post(self, endpoint: str, data: dict, **kwargs) -> dict:
         """POST request to Airbyte API."""
         url = f"{self.api_url}{endpoint}"
-        resp = requests.post(url, json=data, auth=self.auth, timeout=30, **kwargs)
+        resp = requests.post(url, json=data, headers=self._headers(), timeout=30, **kwargs)
+        if resp.status_code == 401:
+            self._access_token = self._get_token()
+            resp = requests.post(url, json=data, headers=self._headers(), timeout=30, **kwargs)
         resp.raise_for_status()
         return resp.json()
 
@@ -64,13 +91,17 @@ class CatalogSyncer:
         """
         try:
             result = self._get("/connections")
-            return result.get("connections", [])
+            # Platform API v1 returns {"data": [...]}; older internal API returned {"connections": [...]}
+            return result.get("data", result.get("connections", []))
         except requests.RequestException as e:
             raise RuntimeError(f"Failed to fetch Airbyte connections: {e}") from e
 
     def get_connection_catalog(self, connection_id: str) -> Optional[dict]:
         """
-        Fetch the discovered catalog for a connection.
+        Fetch the configured catalog for a connection.
+
+        Uses GET /connections/{connectionId} — the Platform API v1 embeds the
+        stream catalog under configurations.streams rather than a separate discover endpoint.
 
         Args:
             connection_id: Airbyte connection UUID
@@ -79,8 +110,9 @@ class CatalogSyncer:
             Catalog dict with 'streams' array, or None if not found
         """
         try:
-            result = self._get(f"/connections/{connection_id}/discover_schema")
-            return result.get("catalog")
+            result = self._get(f"/connections/{connection_id}")
+            streams = result.get("configurations", {}).get("streams", [])
+            return {"streams": streams} if streams else None
         except requests.RequestException as e:
             print(f"⚠️  Could not fetch catalog for {connection_id}: {e}")
             return None
@@ -193,9 +225,15 @@ class CatalogSyncer:
         diffs = []
 
         for stream in streams:
-            config = stream.get("config", {})
-            stream_name = config.get("name")
-            json_schema = config.get("jsonSchema", {})
+            # Platform API v1 (flat): {"name": "...", "jsonSchema": {...}, ...}
+            # Older internal API (nested): {"config": {"name": "...", "jsonSchema": {...}}}
+            if "name" in stream:
+                stream_name = stream["name"]
+                json_schema = stream.get("jsonSchema", {})
+            else:
+                config = stream.get("config", {})
+                stream_name = config.get("name")
+                json_schema = config.get("jsonSchema", {})
 
             if not stream_name or not json_schema:
                 continue

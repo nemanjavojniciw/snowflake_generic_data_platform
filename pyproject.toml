@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "snowflake-generic-data-platform"
+version = "0.1.0"
+description = "Self-managing dbt/Airflow/Airbyte data platform for Snowflake"
+requires-python = ">=3.11"
+dependencies = [
+    "click>=8.1",
+    "pyyaml>=6.0",
+    "requests>=2.31",
+    "snowflake-connector-python>=3.6",
+    "gitpython>=3.1",
+    "jinja2>=3.1",
+]
+
+[project.scripts]
+platform = "sgdp.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["sgdp*"]

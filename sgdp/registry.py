@@ -213,7 +213,7 @@ class SchemaRegistry:
                     source_name,
                     table_name,
                     json.dumps(columns),
-                    primary_keys or [],
+                    json.dumps(primary_keys or []),
                     load_strategy,
                     new_hash,
                     business_owner,
@@ -291,11 +291,16 @@ class SchemaRegistry:
                     change_history = %s
                 WHERE source_name = %s AND table_name = %s
             """
+            existing_pks = existing.get("primary_keys", [])
+            if isinstance(existing_pks, str):
+                existing_pks = json.loads(existing_pks)
+            merged_pks = primary_keys if primary_keys is not None else existing_pks
+
             self._execute(
                 sql,
                 (
                     json.dumps(columns),
-                    primary_keys or existing.get("primary_keys", []),
+                    json.dumps(merged_pks),
                     load_strategy,
                     business_owner,
                     new_hash,
@@ -317,7 +322,7 @@ class SchemaRegistry:
             self._execute(
                 sql,
                 (
-                    primary_keys,
+                    json.dumps(primary_keys) if primary_keys is not None else None,
                     load_strategy,
                     business_owner,
                     source_name,
@@ -344,11 +349,15 @@ class SchemaRegistry:
             business_owner: Team/email
         """
         sql = """
-            INSERT INTO GENERIC_PLATFORM.PUBLIC.source_catalog (
-                source_name, airbyte_connection_id, sync_schedule, business_owner
-            )
-            VALUES (%s, %s, %s, %s)
-            ON CONFLICT DO NOTHING
+            MERGE INTO GENERIC_PLATFORM.PUBLIC.source_catalog AS target
+            USING (
+                SELECT %s AS source_name, %s AS airbyte_connection_id,
+                       %s AS sync_schedule,  %s AS business_owner
+            ) AS src
+            ON target.source_name = src.source_name
+            WHEN NOT MATCHED THEN
+                INSERT (source_name, airbyte_connection_id, sync_schedule, business_owner)
+                VALUES (src.source_name, src.airbyte_connection_id, src.sync_schedule, src.business_owner)
         """
         self._execute(
             sql,
