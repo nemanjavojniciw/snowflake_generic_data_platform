@@ -44,16 +44,15 @@ x-airflow-common:
     GIT_REPO_URL: ${GIT_REPO_URL:-}
     GIT_TOKEN: ${GIT_TOKEN:-}
     GIT_BRANCH: ${GIT_BRANCH:-main}
-    # Auto-configure the Airbyte Airflow connection — no manual UI step needed
-    AIRFLOW_CONN_AIRBYTE_LOCAL: "airbyte://${AIRBYTE_CLIENT_ID}:${AIRBYTE_CLIENT_SECRET}@host.docker.internal:8000"
   volumes:
     - ../airflow/dags:/opt/airflow/dags
     - ../airflow/logs:/opt/airflow/logs
     - ../airflow/plugins:/opt/airflow/plugins
     - ../airflow/config:/opt/airflow/config
     - ../sgdp:/opt/airflow/sgdp               # platform services available in DAGs
-    - ../dbt_project:/opt/dbt                 # dbt project available in containers
-    - ../sources:/opt/sources                 # source_metadata.yml files
+    - ../dbt_project:/opt/airflow/dbt_project # aligned with repo-root-relative write paths
+    - ../sources:/opt/airflow/sources         # source_metadata.yml files
+    - ../.git:/opt/airflow/.git               # git repo so generators can commit model files
   depends_on:
     postgres:
       condition: service_healthy

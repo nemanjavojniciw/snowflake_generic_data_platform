@@ -1,6 +1,6 @@
 -- GENERATED FILE — DO NOT EDIT MANUALLY
 -- source: fakedata | table: products
--- generated_at: 2026-06-03T11:21:14.538108Z | schema_hash: 13f8c9e596463f970f9ec61ed3bbd4be
+-- generated_at: 2026-06-03T14:02:25.192481Z | schema_hash: 13f8c9e596463f970f9ec61ed3bbd4be
 
 {{ config(tags=['bronze', 'generated', 'fakedata']) }}
 

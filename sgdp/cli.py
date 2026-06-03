@@ -281,13 +281,25 @@ def sync(source_name: str, generate_models: bool, run_dbt: bool):
         # Step 3: Run dbt (if requested)
         if run_dbt or generate_models:
             print_header("Running dbt")
+
+            dbt_base_args = [
+                "--project-dir", str(DBT_DIR),
+                "--profiles-dir", str(DBT_DIR),
+            ]
+
+            # Ensure Elementary's internal tables exist before running source models.
+            # Elementary is incremental — this is a no-op after first initialization.
+            elem = subprocess.run(
+                ["dbt", "run", "--select", "elementary", "--quiet", *dbt_base_args],
+                cwd=str(PROJECT_ROOT),
+                capture_output=True,
+                text=True,
+            )
+            if elem.returncode != 0:
+                print_warn("Elementary initialisation failed — data quality tracking may be unavailable")
+
             result = subprocess.run(
-                [
-                    "dbt", "run",
-                    "--select", f"tag:{source_name}",
-                    "--project-dir", str(DBT_DIR),
-                    "--profiles-dir", str(DBT_DIR),
-                ],
+                ["dbt", "run", "--select", f"tag:{source_name}", *dbt_base_args],
                 cwd=str(PROJECT_ROOT),
             )
 
@@ -300,12 +312,7 @@ def sync(source_name: str, generate_models: bool, run_dbt: bool):
             # Run tests
             print_info("Running dbt tests...")
             result = subprocess.run(
-                [
-                    "dbt", "test",
-                    "--select", f"tag:{source_name}",
-                    "--project-dir", str(DBT_DIR),
-                    "--profiles-dir", str(DBT_DIR),
-                ],
+                ["dbt", "test", "--select", f"tag:{source_name}", *dbt_base_args],
                 cwd=str(PROJECT_ROOT),
             )
 

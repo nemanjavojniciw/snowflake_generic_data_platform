@@ -30,7 +30,6 @@ from airflow import DAG
 from airflow.decorators import task
 from airflow.exceptions import AirflowException
 from airflow.models import Variable
-from airflow.providers.airbyte.operators.airbyte import AirbyteTriggerSyncOperator
 from airflow.utils.task_group import TaskGroup
 
 # Import platform services
@@ -108,12 +107,13 @@ def build_source_dag(source: dict) -> DAG:
         # 1. Trigger Airbyte sync
         # ────────────────────────────────────────────────────────────────────────────
 
-        trigger_sync = AirbyteTriggerSyncOperator(
-            task_id="trigger_airbyte_sync",
-            airbyte_conn_id="airbyte_local",
-            connection_id=airbyte_conn_id,
-            asynchronous=False,  # block until Airbyte sync completes before running dbt
-        )
+        @task(task_id="trigger_airbyte_sync")
+        def trigger_airbyte_sync(connection_id: str):
+            """Trigger Airbyte sync and wait for completion via CatalogSyncer."""
+            syncer = CatalogSyncer()
+            syncer.trigger_sync(connection_id, wait=True)
+
+        trigger_sync = trigger_airbyte_sync(airbyte_conn_id)
 
         # ────────────────────────────────────────────────────────────────────────────
         # 2. Run catalog syncer (detect schema changes)
@@ -166,26 +166,26 @@ def build_source_dag(source: dict) -> DAG:
         # 5. dbt run and test
         # ────────────────────────────────────────────────────────────────────────────
 
-        @task
+        @task(task_id="dbt_run")
         def dbt_run_source(source_name: str):
             """Run dbt for this source."""
-            # In real setup, would use Cosmos DbtTaskGroup or shell operator
-            # For now, return a placeholder
             import subprocess
 
             result = subprocess.run(
                 [
                     "dbt", "run",
                     "--select", f"tag:{source_name}",
-                    "--project-dir", "/opt/dbt",
-                    "--profiles-dir", "/opt/dbt",
+                    "--project-dir", "/opt/airflow/dbt_project",
+                    "--profiles-dir", "/opt/airflow/dbt_project",
+                    "--no-partial-parse",
                 ],
                 capture_output=True,
                 text=True,
             )
 
+            print(result.stdout)
             if result.returncode != 0:
-                raise AirflowException(f"dbt run failed: {result.stderr}")
+                raise AirflowException(f"dbt run failed:\n{result.stdout}\n{result.stderr}".strip())
 
             return result.stdout
 
@@ -198,15 +198,17 @@ def build_source_dag(source: dict) -> DAG:
                 [
                     "dbt", "test",
                     "--select", f"tag:{source_name}",
-                    "--project-dir", "/opt/dbt",
-                    "--profiles-dir", "/opt/dbt",
+                    "--project-dir", "/opt/airflow/dbt_project",
+                    "--profiles-dir", "/opt/airflow/dbt_project",
+                    "--no-partial-parse",
                 ],
                 capture_output=True,
                 text=True,
             )
 
+            print(result.stdout)
             if result.returncode != 0:
-                raise AirflowException(f"dbt test failed: {result.stderr}")
+                raise AirflowException(f"dbt test failed:\n{result.stdout}\n{result.stderr}".strip())
 
             return result.stdout
 
@@ -220,7 +222,7 @@ def build_source_dag(source: dict) -> DAG:
         @task
         def notify_on_failure(source_name: str):
             """Alert business owner if something failed."""
-            owner = Variable.get(f"{source_name}_business_owner", default="admin@platform")
+            owner = Variable.get(f"{source_name}_business_owner", default_var="admin@platform")
             # In real setup, would integrate with Slack, PagerDuty, etc.
             print(f"Would alert {owner} of failure/changes for {source_name}")
 

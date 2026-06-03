@@ -1,6 +1,6 @@
 -- GENERATED FILE — DO NOT EDIT MANUALLY
 -- source: fakedata | table: users | strategy: incremental
--- generated_at: 2026-06-03T11:21:15.934292Z
+-- generated_at: 2026-06-03T14:02:26.666519Z
 
 {{
     config(
