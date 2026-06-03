@@ -20,7 +20,7 @@ Any Source  →  Airbyte (EL)  →  Snowflake RAW  →  dbt Bronze  →  dbt Sil
 
 When a new source is connected via Airbyte, the platform:
 
-1. Discovers the source schema via the Airbyte Config API
+1. Discovers the source schema via the Airbyte API
 2. Stores it in the Schema Registry (Snowflake)
 3. Generates bronze and silver dbt models and commits them to this repo
 4. Registers an Airflow DAG for the source automatically
@@ -34,15 +34,15 @@ The only thing a human writes is `source_metadata.yml` — primary keys, load st
 
 | Layer | Tool |
 |---|---|
-| Extract & Load | Airbyte OSS (local) / Airbyte Cloud |
+| Extract & Load | Airbyte OSS via `abctl` (local Kubernetes) |
 | Data Warehouse | Snowflake |
 | Transformations | dbt Core |
-| Orchestration | Apache Airflow via Astro CLI |
+| Orchestration | Apache Airflow (Docker Compose, LocalExecutor) |
 | Code Generation | Python 3.11 + Jinja2 |
 | Data Quality | Elementary |
 | Version Control | Git / GitHub |
 
-> All services run locally via Docker except Snowflake, which has no viable local equivalent. A free Snowflake trial account is sufficient for development.
+Airbyte runs on a local Kubernetes cluster managed by `abctl`. Airflow runs via Docker Compose. Snowflake is the only external cloud service.
 
 ---
 
@@ -50,74 +50,66 @@ The only thing a human writes is `source_metadata.yml` — primary keys, load st
 
 - [Docker Desktop](https://www.docker.com/products/docker-desktop/) 4.x+
 - [Python](https://www.python.org/) 3.11+
-- [abctl](https://github.com/airbytehq/abctl/releases/latest) — Airbyte's local installer CLI (handled by `setup_env.ps1`)
+- [abctl](https://github.com/airbytehq/abctl/releases/latest) — Airbyte's local Kubernetes installer
 - A Snowflake account ([free trial](https://signup.snowflake.com/))
 - A GitHub account with a personal access token (for model commits)
 
-Run `.\scripts\setup_env.ps1` from the repo root — it installs Python, abctl, and all dependencies, and copies `.env.example` to `.env`.
+Run `.\scripts\setup_env.ps1` from the repo root — it installs `uv`, Python 3.11, Node.js, Docker Desktop, and `abctl` automatically.
 
 ---
 
 ## Quick Start
 
-### 1. Clone and configure
+### 1. Clone and bootstrap
 
-```bash
+```powershell
 git clone https://github.com/nemanjavojniciw/snowflake_generic_data_platform
-cd snowflake-data-platform
-cp .env.example .env
+cd snowflake_generic_data_platform
+.\scripts\setup_env.ps1
 ```
 
-Edit `.env` with your Snowflake credentials and GitHub token (see [Configuration](#configuration)).
+The setup script installs all prerequisites and copies `compose\.env.example` to `compose\.env`.
 
-### 2. Start Airbyte locally
+### 2. Configure credentials
+
+Edit `compose\.env` with your Snowflake credentials and GitHub token (see [Configuration](#configuration)).
+
+### 3. Start the platform
 
 ```powershell
-abctl local install
+.\start.ps1
 ```
 
-First run downloads the Airbyte platform and starts a local Kubernetes cluster inside Docker — allow up to 20 minutes. Subsequent starts are fast.
+This starts Airflow (Docker Compose) and Airbyte (`abctl local install`) in parallel.
 
-Once installed, retrieve your credentials:
+- First Airbyte run downloads the platform and starts a local Kubernetes cluster — allow up to 20 minutes. Subsequent starts are fast.
+- Add `-Build` to rebuild the Airflow image: `.\start.ps1 -Build`
 
-```powershell
-abctl local credentials
-```
+Once up:
 
-Airbyte UI available at `http://localhost:8000`.
+| Service | URL | Credentials |
+|---|---|---|
+| Airflow | http://localhost:8080 | `admin` / `admin` |
+| Airbyte | http://localhost:8000 | run `abctl local credentials` |
 
-To stop: `abctl local uninstall`
-
-### 3. Start Airflow
-
-From the repo root:
-
-```powershell
-docker compose -f compose/docker-compose.yml up -d --build
-```
-
-Airflow UI available at `http://localhost:8080` — credentials `admin / admin`.
+To stop Airbyte: `abctl local uninstall`  
+To stop Airflow: `docker compose -f compose/docker-compose.yml down`
 
 ### 4. Install Python dependencies
 
-```bash
-pip install -r requirements.txt
+```powershell
+.\.venv\Scripts\Activate.ps1
+pip install -e .
 cd dbt_project && dbt deps
 ```
 
 ### 5. Initialise Snowflake
 
-```bash
-python platform/scripts/init_snowflake.py
+```powershell
+python sgdp/scripts/init_snowflake.py
 ```
 
 Creates all databases, schemas, warehouses, roles, and the Schema Registry table.
-
-### 6. Verify everything is connected
-
-```bash
-python platform/scripts/health_check.py
-```
 
 ---
 
@@ -125,7 +117,7 @@ python platform/scripts/health_check.py
 
 **Target: under 5 minutes from connection to live pipeline.**
 
-**Step 1.** Connect the source in Airbyte (`http://localhost:8000`). Set the destination to Snowflake, database `RAW`, schema = your source name. Note the connection ID from the URL.
+**Step 1.** Connect the source in Airbyte (`http://localhost:8000`). Set the destination to Snowflake, database `GENERIC_AIRBYTE_LANDING`, schema = your source name. Note the connection ID from the URL.
 
 **Step 2.** Register the source with the platform:
 
@@ -171,60 +163,73 @@ Done. Bronze and silver models are committed to this repo, the Airflow DAG is li
 
 ## Snowflake Layer Design
 
+All data lives in the `GENERIC_AIRBYTE_LANDING` database:
+
 ```
-PLATFORM  — schema registry, run logs, source catalog (platform metadata)
-RAW       — airbyte landing zone, one schema per source (never query directly)
-BRONZE    — generated: typed, metadata-enriched views of raw data
-SILVER    — generated: deduplicated, business-key resolved, analytically ready
+GENERIC_AIRBYTE_LANDING
+├── PUBLIC          — Airbyte raw landing zone (never query directly)
+├── GENERIC_BRONZE  — generated: typed, metadata-enriched views of raw data
+└── GENERIC_SILVER  — generated: deduplicated, business-key resolved, analytically ready
 ```
 
-Tables follow the naming pattern `<layer>.<source_name>.<table_name>`, for example `silver.stripe.invoices`.
+Tables follow the naming pattern `<layer>_<source_name>_<table_name>`, for example:
+- `GENERIC_BRONZE.bronze_stripe_invoices`
+- `GENERIC_SILVER.silver_stripe_invoices`
 
 ---
 
 ## Repository Structure
 
 ```
-snowflake-data-platform/
+snowflake_generic_data_platform/
 │
 ├── README.md
-├── compose/
-│   ├── docker-compose.yml          # Airflow local stack
-│   ├── .env.example                # environment variable template
-│   └── .env                        # your local credentials (git-ignored)
-├── scripts/
-│   ├── setup_env.ps1               # Windows bootstrap script
-│   └── requirements.txt            # Python dependencies
+├── start.ps1                           # start Airflow + Airbyte in parallel
+├── pyproject.toml                      # platform package definition
 │
-├── platform/                       # platform engine (Python)
-│   ├── catalog_syncer.py           # polls Airbyte API → Schema Registry
-│   ├── registry.py                 # Schema Registry client
-│   ├── evolution_handler.py        # handles schema drift automatically
-│   ├── git_client.py               # commits generated files to this repo
+├── scripts/
+│   ├── setup_env.ps1                   # Windows bootstrap (installs all prereqs)
+│   └── requirements.txt               # Python dependencies
+│
+├── compose/
+│   ├── docker-compose.yml              # Airflow stack (LocalExecutor + Postgres)
+│   ├── .env.example                    # environment variable template
+│   └── .env                           # your local credentials (git-ignored)
+│
+├── sgdp/                               # platform engine (Python)
+│   ├── catalog_syncer.py               # polls Airbyte API → Schema Registry
+│   ├── registry.py                     # Schema Registry client
+│   ├── evolution_handler.py            # handles schema drift automatically
+│   ├── git_client.py                   # commits generated files to this repo
+│   ├── cli.py                          # `platform` CLI entrypoint
 │   ├── generators/
 │   │   ├── bronze_generator.py
-│   │   ├── silver_generator.py
-│   │   └── sources_yml_generator.py
-│   └── templates/                  # Jinja2 SQL templates
-│       ├── bronze_model.sql.j2
-│       ├── silver_incremental.sql.j2
-│       ├── silver_full_refresh.sql.j2
-│       └── silver_scd2.sql.j2
+│   │   └── silver_generator.py
+│   ├── templates/                      # Jinja2 SQL templates
+│   │   ├── bronze_model.sql.j2
+│   │   ├── bronze_schema.yml.j2
+│   │   ├── silver_incremental.sql.j2
+│   │   ├── silver_full_refresh.sql.j2
+│   │   ├── silver_scd2.sql.j2
+│   │   └── sources.yml.j2
+│   └── scripts/
+│       └── init_snowflake.py           # one-time Snowflake setup
 │
-├── airflow/                        # Astro CLI project
+├── airflow/
 │   └── dags/
-│       └── platform_dag_factory.py # dynamic DAG engine — no hand-written DAGs
+│       └── platform_dag_factory.py     # dynamic DAG engine — no hand-written DAGs
 │
-├── dbt_project/                    # dbt Core project
+├── dbt_project/                        # dbt Core project
 │   ├── dbt_project.yml
 │   ├── packages.yml
-│   ├── models/
-│   │   ├── bronze/                 # ⚠ GENERATED — do not edit manually
-│   │   └── silver/                 # ⚠ GENERATED — do not edit manually
-│   └── macros/
-│       └── platform_macros.sql
+│   ├── profiles.yml                    # uses env vars from compose/.env
+│   ├── macros/
+│   │   └── generate_schema_name.sql   # overrides dbt default schema naming
+│   └── models/
+│       ├── bronze/                     # ⚠ GENERATED — do not edit manually
+│       └── silver/                     # ⚠ GENERATED — do not edit manually
 │
-└── sources/                        # ✅ human-authored config lives here only
+└── sources/                            # ✅ human-authored config lives here only
     └── <source_name>/
         └── source_metadata.yml
 ```
@@ -233,7 +238,7 @@ snowflake-data-platform/
 
 ## Configuration
 
-All configuration lives in `.env`. Copy `.env.example` to get started.
+All configuration lives in `compose/.env`. Copy `compose/.env.example` to get started.
 
 ```bash
 # Snowflake
@@ -241,18 +246,20 @@ SNOWFLAKE_ACCOUNT=youraccount.region
 SNOWFLAKE_USER=platform_svc
 SNOWFLAKE_PASSWORD=yourpassword
 SNOWFLAKE_ROLE=PLATFORM_ADMIN
-SNOWFLAKE_WAREHOUSE=PLATFORM_WH
+SNOWFLAKE_WAREHOUSE=TRANSFORM_WH
 
-# Airbyte (local) — get username/password by running: abctl local credentials
-AIRBYTE_API_URL=http://localhost:8000/api/v1
-AIRBYTE_USERNAME=<from abctl local credentials>
-AIRBYTE_PASSWORD=<from abctl local credentials>
+# Airbyte (local) — get client ID and secret from: abctl local credentials
+AIRBYTE_API_URL=http://localhost:8000/api/public/v1
+AIRBYTE_CLIENT_ID=<from abctl local credentials>
+AIRBYTE_CLIENT_SECRET=<from abctl local credentials>
 
 # Git (for committing generated models)
-GIT_REPO_URL=https://github.com/yourorg/snowflake-data-platform
+GIT_REPO_URL=https://github.com/yourorg/snowflake_generic_data_platform
 GIT_TOKEN=ghp_yourtokenhere
 GIT_BRANCH=main
 ```
+
+The `platform` CLI and Airflow containers both read from this file automatically — no need to export env vars manually.
 
 ---
 
@@ -265,6 +272,18 @@ platform status           # show all sources, last sync time, and health
 platform regen <source>   # force-regenerate all models for a source
 platform validate         # run dbt compile across all generated models
 platform docs             # serve dbt docs locally
+```
+
+Run dbt directly only after loading env vars (the CLI handles this automatically):
+
+```powershell
+# Load compose/.env into current shell before running dbt directly
+Get-Content compose\.env | ForEach-Object {
+    if ($_ -match '^\s*([^#][^=]+)=(.*)$') {
+        [System.Environment]::SetEnvironmentVariable($matches[1].Trim(), $matches[2].Trim(), 'Process')
+    }
+}
+cd dbt_project && dbt run
 ```
 
 ---
@@ -280,29 +299,13 @@ When a source schema changes, the platform handles it automatically on the next 
 | Removed column | Soft-deprecates with null-fill, alerts owner |
 | Type changed | Adds explicit cast in bronze, alerts owner |
 
-No pipeline ever breaks silently on schema drift. Source owners are notified via the configured alert channel.
-
----
-
-## Local to Cloud Migration
-
-The platform is designed for a zero-rewrite migration to managed cloud services. All connections are environment variables — nothing is hardcoded.
-
-| Service | Migration effort | What changes |
-|---|---|---|
-| Airbyte OSS → Airbyte Cloud | ~half a day | One environment variable (`AIRBYTE_API_URL`) |
-| Astro CLI → Astronomer Cloud | 1–2 days | `astro deploy` + re-create connections in UI |
-| dbt Core → dbt Cloud | 1 day | DAG engine updated to trigger dbt Cloud jobs via API |
-
-Platform Python code, generated dbt models, `source_metadata.yml` files, and Snowflake structure are all unchanged by a cloud migration.
-
 ---
 
 ## Generated Code
 
-Models in `dbt_project/models/bronze/` and `dbt_project/models/silver/` are generated by the platform and committed here for full auditability. Every file contains a header indicating when it was generated and from which schema hash.
+Models in `dbt_project/models/bronze/` and `dbt_project/models/silver/` are generated by the platform and committed here for full auditability.
 
-**Do not edit generated files manually.** Changes will be overwritten on the next schema sync. To modify generation behaviour, edit the Jinja templates in `platform/templates/`.
+**Do not edit generated files manually.** Changes will be overwritten on the next schema sync. To modify generation behaviour, edit the Jinja templates in `sgdp/templates/`.
 
 ---
 
@@ -311,8 +314,8 @@ Models in `dbt_project/models/bronze/` and `dbt_project/models/silver/` are gene
 The only directories intended for human authoring are:
 
 - `sources/` — source metadata config
-- `platform/templates/` — SQL generation templates
-- `platform/` — platform engine Python code
+- `sgdp/templates/` — SQL generation templates
+- `sgdp/` — platform engine Python code
 - `airflow/dags/platform_dag_factory.py` — DAG engine
 
 Everything under `dbt_project/models/` is generated. Pull requests editing those files will not be accepted.
