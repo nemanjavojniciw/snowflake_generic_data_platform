@@ -1,31 +1,29 @@
 -- GENERATED FILE — DO NOT EDIT MANUALLY
--- source: {{ source_name }} | table: {{ table_name }} | strategy: full_refresh
--- generated_at: {{ generated_at }}
+-- source: [[ source_name ]] | table: [[ table_name ]] | strategy: full_refresh
+-- generated_at: [[ generated_at ]]
 
-{# cluster_by=cluster_keys -- auto clustering disabled #}
 {{
     config(
         materialized='table',
-        on_schema_change='sync_all_columns'
+        on_schema_change='sync_all_columns',
+        tags=['silver', 'generated', '[[ source_name ]]']
     )
 }}
 
 with bronze as (
-    select * from {{ ref(source_name + '__' + table_name) }}
+    select * from {{ ref('bronze_[[ source_name ]]_[[ table_name ]]') }}
 ),
 
 deduped as (
     select
-{% for col_name, col_info in columns.items() %}
-{% if col_name not in ['_airbyte_raw_id', '_airbyte_extracted_at', '_airbyte_loaded_at', '_airbyte_data', '_bronze_created_at'] %}
-        {{ col_name }},
-{% endif %}
-{% endfor %}
+[% for col_name, col_info in columns.items() %]
+        [[ col_name ]],
+[% endfor %]
         _raw_id,
         _extracted_at,
         _loaded_at,
         row_number() over (
-            partition by {{ primary_keys | join(', ') if primary_keys else 'id' }}
+            partition by [[ primary_keys | join(', ') if primary_keys else 'id' ]]
             order by _extracted_at desc
         ) as _rn
 
@@ -34,11 +32,9 @@ deduped as (
 
 silver as (
     select
-{% for col_name, col_info in columns.items() %}
-{% if col_name not in ['_airbyte_raw_id', '_airbyte_extracted_at', '_airbyte_loaded_at', '_airbyte_data', '_bronze_created_at'] %}
-        {{ col_name }},
-{% endif %}
-{% endfor %}
+[% for col_name, col_info in columns.items() %]
+        [[ col_name ]],
+[% endfor %]
         _raw_id,
         _extracted_at,
         _loaded_at,

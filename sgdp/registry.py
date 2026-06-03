@@ -205,7 +205,7 @@ class SchemaRegistry:
                     source_name, table_name, columns, primary_keys, load_strategy,
                     schema_hash, business_owner, airbyte_connection_id, last_seen_at, last_changed_at
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP())
+                SELECT %s, %s, PARSE_JSON(%s), PARSE_JSON(%s), %s, %s, %s, %s, CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP()
             """
             self._execute(
                 sql,
@@ -281,14 +281,14 @@ class SchemaRegistry:
 
             sql = """
                 UPDATE GENERIC_PLATFORM.PUBLIC.schema_registry
-                SET columns = %s,
-                    primary_keys = %s,
+                SET columns = PARSE_JSON(%s),
+                    primary_keys = PARSE_JSON(%s),
                     load_strategy = COALESCE(%s, load_strategy),
                     business_owner = COALESCE(%s, business_owner),
                     schema_hash = %s,
                     last_seen_at = CURRENT_TIMESTAMP(),
                     last_changed_at = CURRENT_TIMESTAMP(),
-                    change_history = %s
+                    change_history = PARSE_JSON(%s)
                 WHERE source_name = %s AND table_name = %s
             """
             existing_pks = existing.get("primary_keys", [])
@@ -314,7 +314,7 @@ class SchemaRegistry:
             sql = """
                 UPDATE GENERIC_PLATFORM.PUBLIC.schema_registry
                 SET last_seen_at = CURRENT_TIMESTAMP(),
-                    primary_keys = COALESCE(%s, primary_keys),
+                    primary_keys = COALESCE(PARSE_JSON(%s), primary_keys),
                     load_strategy = COALESCE(%s, load_strategy),
                     business_owner = COALESCE(%s, business_owner)
                 WHERE source_name = %s AND table_name = %s

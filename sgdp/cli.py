@@ -27,6 +27,15 @@ from typing import Optional
 
 import click
 import yaml
+from dotenv import load_dotenv
+
+# Load compose/.env automatically so credentials don't need to be set manually in the shell.
+# existing shell env vars take priority (override=False is the default).
+PROJECT_ROOT = Path(__file__).parent.parent
+DBT_DIR = PROJECT_ROOT / "dbt_project"
+
+_env_file = PROJECT_ROOT / "compose" / ".env"
+load_dotenv(_env_file)
 
 from sgdp.catalog_syncer import CatalogSyncer
 from sgdp.evolution_handler import EvolutionHandler
@@ -142,15 +151,20 @@ def add_source(name: str, airbyte_connection_id: str, schedule: str, owner: str)
         )
         print_success(f"Registered source: {name}")
 
+        # Patch Airbyte connection namespace so data lands in the right schema
+        print_info("Setting Airbyte connection namespace...")
+        syncer = CatalogSyncer()
+        syncer.set_connection_namespace(airbyte_connection_id, name)
+        print_success(f"Namespace set → GENERIC_AIRBYTE_LANDING.{name}")
+
         # Create source_metadata.yml stub
         sources_dir = Path("sources") / name
         sources_dir.mkdir(parents=True, exist_ok=True)
 
         metadata_path = sources_dir / "source_metadata.yml"
 
-        # Fetch schema from Airbyte to populate stub
+        # Fetch stream names from Airbyte to populate stub
         print_info("Fetching schema from Airbyte...")
-        syncer = CatalogSyncer()
         diff_report = syncer.sync_source(name)
 
         # Create stub with discovered tables
@@ -179,6 +193,45 @@ def add_source(name: str, airbyte_connection_id: str, schedule: str, owner: str)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Command: trigger-sync
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+@cli.command()
+@click.argument("source_name")
+@click.option("--no-wait", is_flag=True, help="Fire and forget — don't wait for completion")
+def trigger_sync(source_name: str, no_wait: bool):
+    """
+    Trigger the Airbyte sync for a source and wait for it to finish.
+
+    Example:
+      platform trigger-sync fakedata
+      platform trigger-sync fakedata --no-wait
+    """
+    try:
+        print_header(f"Triggering Airbyte sync: {source_name}")
+
+        registry = SchemaRegistry()
+        sources = registry.get_active_sources()
+        source = next((s for s in sources if s["source_name"] == source_name), None)
+
+        if not source:
+            print_error(f"Source '{source_name}' not found. Run: platform add-source first.")
+            sys.exit(1)
+
+        conn_id = source["airbyte_connection_id"]
+        syncer = CatalogSyncer()
+        syncer.trigger_sync(conn_id, wait=not no_wait)
+
+        if not no_wait:
+            print_success("Airbyte sync complete — run: platform sync fakedata --generate-models --run-dbt")
+
+    except Exception as e:
+        print_error(f"Trigger failed: {e}")
+        sys.exit(1)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Command: sync
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -197,10 +250,10 @@ def sync(source_name: str, generate_models: bool, run_dbt: bool):
     try:
         print_header(f"Syncing source: {source_name}")
 
-        # Step 1: Sync catalog
-        print_info("Syncing catalog from Airbyte...")
+        # Step 1: Sync catalog from Snowflake landing zone (Airbyte must have run first)
+        print_info("Reading schema from GENERIC_AIRBYTE_LANDING...")
         syncer = CatalogSyncer()
-        diff_report = syncer.sync_source(source_name)
+        diff_report = syncer.sync_from_landing(source_name)
 
         if diff_report["has_changes"]:
             print_info("Schema changes detected!")
@@ -212,25 +265,30 @@ def sync(source_name: str, generate_models: bool, run_dbt: bool):
         # Step 2: Generate models (if needed)
         if generate_models or diff_report["has_changes"]:
             print_header("Generating models")
-            handler = EvolutionHandler()
-            summary = handler.handle_changes(source_name, diff_report)
-
-            if summary["regenerated_models"]:
-                print_success(f"Generated {len(summary['regenerated_models'])} files")
+            if generate_models and not diff_report["has_changes"]:
+                # Force regen even with no schema changes (e.g. after deleting model files)
+                files = (
+                    BronzeGenerator().generate_source(source_name)
+                    + SilverGenerator().generate_source(source_name)
+                )
+                print_success(f"Generated {len(files)} files")
+            else:
+                handler = EvolutionHandler()
+                summary = handler.handle_changes(source_name, diff_report)
+                if summary["regenerated_models"]:
+                    print_success(f"Generated {len(summary['regenerated_models'])} files")
 
         # Step 3: Run dbt (if requested)
         if run_dbt or generate_models:
             print_header("Running dbt")
             result = subprocess.run(
                 [
-                    "dbt",
-                    "run",
-                    "--select",
-                    f"tag:{source_name}",
-                    "--project-dir",
-                    "dbt_project",
+                    "dbt", "run",
+                    "--select", f"tag:{source_name}",
+                    "--project-dir", str(DBT_DIR),
+                    "--profiles-dir", str(DBT_DIR),
                 ],
-                cwd=".",
+                cwd=str(PROJECT_ROOT),
             )
 
             if result.returncode == 0:
@@ -243,14 +301,12 @@ def sync(source_name: str, generate_models: bool, run_dbt: bool):
             print_info("Running dbt tests...")
             result = subprocess.run(
                 [
-                    "dbt",
-                    "test",
-                    "--select",
-                    f"tag:{source_name}",
-                    "--project-dir",
-                    "dbt_project",
+                    "dbt", "test",
+                    "--select", f"tag:{source_name}",
+                    "--project-dir", str(DBT_DIR),
+                    "--profiles-dir", str(DBT_DIR),
                 ],
-                cwd=".",
+                cwd=str(PROJECT_ROOT),
             )
 
             if result.returncode == 0:
@@ -414,7 +470,7 @@ def validate():
         # dbt compile
         print_info("Running dbt compile...")
         result = subprocess.run(
-            ["dbt", "compile", "--project-dir", "dbt_project"],
+            ["dbt", "compile", "--project-dir", "dbt_project", "--profiles-dir", "dbt_project"],
             cwd=".",
         )
 
@@ -427,7 +483,7 @@ def validate():
         # dbt test
         print_info("Running dbt tests...")
         result = subprocess.run(
-            ["dbt", "test", "--project-dir", "dbt_project"],
+            ["dbt", "test", "--project-dir", "dbt_project", "--profiles-dir", "dbt_project"],
             cwd=".",
         )
 
@@ -462,7 +518,7 @@ def docs():
         # dbt docs generate
         print_info("Generating docs...")
         result = subprocess.run(
-            ["dbt", "docs", "generate", "--project-dir", "dbt_project"],
+            ["dbt", "docs", "generate", "--project-dir", "dbt_project", "--profiles-dir", "dbt_project"],
             cwd=".",
         )
 
@@ -477,7 +533,7 @@ def docs():
         print_info("Press Ctrl+C to stop")
 
         subprocess.run(
-            ["dbt", "docs", "serve", "--project-dir", "dbt_project", "--port", "8001"],
+            ["dbt", "docs", "serve", "--project-dir", "dbt_project", "--profiles-dir", "dbt_project", "--port", "8001"],
             cwd=".",
         )
 

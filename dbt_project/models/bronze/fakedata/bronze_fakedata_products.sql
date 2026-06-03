@@ -1,11 +1,11 @@
 -- GENERATED FILE — DO NOT EDIT MANUALLY
--- source: [[ source_name ]] | table: [[ table_name ]]
--- generated_at: [[ generated_at ]] | schema_hash: [[ schema_hash ]]
+-- source: fakedata | table: products
+-- generated_at: 2026-06-03T11:21:14.538108Z | schema_hash: 13f8c9e596463f970f9ec61ed3bbd4be
 
-{{ config(tags=['bronze', 'generated', '[[ source_name ]]']) }}
+{{ config(tags=['bronze', 'generated', 'fakedata']) }}
 
 with source as (
-    select * from GENERIC_AIRBYTE_LANDING.GENERIC_AIRBYTE_LANDING.[[ table_name ]]
+    select * from GENERIC_AIRBYTE_LANDING.GENERIC_AIRBYTE_LANDING.products
 ),
 
 bronze as (
@@ -16,9 +16,13 @@ bronze as (
         _airbyte_extracted_at   as _loaded_at,
 
         -- source columns
-[% for col_name, col_info in columns.items() %]
-        [[ col_name ]],
-[% endfor %]
+        created_at,
+        id,
+        make,
+        model,
+        price,
+        updated_at,
+        year,
 
         current_timestamp()     as _bronze_created_at
 

@@ -1,0 +1,19 @@
+fakedata:
+  products:
+    primary_key:
+    - id
+    load_strategy: incremental
+    business_owner: fakedata-team
+    description: 'Table: products'
+  users:
+    primary_key:
+    - id
+    load_strategy: incremental
+    business_owner: fakedata-team
+    description: 'Table: users'
+  purchases:
+    primary_key:
+    - id
+    load_strategy: incremental
+    business_owner: fakedata-team
+    description: 'Table: purchases'

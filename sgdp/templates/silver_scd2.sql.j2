@@ -1,50 +1,45 @@
 -- GENERATED FILE — DO NOT EDIT MANUALLY
--- source: {{ source_name }} | table: {{ table_name }} | strategy: scd2
--- generated_at: {{ generated_at }}
--- tracked columns: {{ tracked_columns | join(', ') }}
+-- source: [[ source_name ]] | table: [[ table_name ]] | strategy: scd2
+-- generated_at: [[ generated_at ]]
+-- tracked columns: [[ tracked_columns | join(', ') ]]
 
-{% snapshot snapshot_table_name %}
-    {# cluster_by=cluster_keys -- auto clustering disabled #}
+{% snapshot [[ source_name ]]_[[ table_name ]]_snapshot %}
     {{
         config(
-            target_schema='silver',
-            unique_key=primary_keys[0] if primary_keys else 'id',
+            target_schema='GENERIC_SILVER',
+            unique_key='[[ primary_keys[0] if primary_keys else "id" ]]',
             strategy='timestamp',
             updated_at='_extracted_at'
         )
     }}
 
     select
-{% for col_name, col_info in columns.items() %}
-{% if col_name not in ['_airbyte_raw_id', '_airbyte_extracted_at', '_airbyte_loaded_at', '_airbyte_data', '_bronze_created_at'] %}
-        {{ col_name }},
-{% endif %}
-{% endfor %}
+[% for col_name, col_info in columns.items() %]
+        [[ col_name ]],
+[% endfor %]
         _raw_id,
         _extracted_at,
         _loaded_at
 
-    from {{ ref(source_name + '__' + table_name) }}
+    from {{ ref('bronze_[[ source_name ]]_[[ table_name ]]') }}
 
 {% endsnapshot %}
 
 with snapshotted as (
-    select * from {{ snapshot('snapshot_table_name') }}
+    select * from {{ ref('[[ source_name ]]_[[ table_name ]]_snapshot') }}
 ),
 
 silver as (
     select
-{% for col_name, col_info in columns.items() %}
-{% if col_name not in ['_airbyte_raw_id', '_airbyte_extracted_at', '_airbyte_loaded_at', '_airbyte_data', '_bronze_created_at'] %}
-        {{ col_name }},
-{% endif %}
-{% endfor %}
+[% for col_name, col_info in columns.items() %]
+        [[ col_name ]],
+[% endfor %]
         _raw_id,
         _extracted_at,
         _loaded_at,
         dbt_valid_from,
         dbt_valid_to,
-        dbt_is_current,
+        case when dbt_valid_to is null then true else false end as dbt_is_current,
         current_timestamp() as _platform_updated_at
 
     from snapshotted

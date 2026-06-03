@@ -39,9 +39,15 @@ class BronzeGenerator:
         self.registry = SchemaRegistry()
         self.git = GitClient(str(self.repo_path))
 
-        # Jinja2 environment
+        # Custom delimiters so dbt's {{ }} and {% %} pass through untouched
         self.env = Environment(
             loader=FileSystemLoader(str(self.templates_dir)),
+            variable_start_string="[[",
+            variable_end_string="]]",
+            block_start_string="[%",
+            block_end_string="%]",
+            comment_start_string="[#",
+            comment_end_string="#]",
             trim_blocks=True,
             lstrip_blocks=True,
         )
@@ -110,7 +116,7 @@ class BronzeGenerator:
 
         # Write to dbt_project/models/bronze/
         model_dir = f"dbt_project/models/bronze/{source_name}"
-        model_path = f"{model_dir}/{table_name}.sql"
+        model_path = f"{model_dir}/bronze_{source_name}_{table_name}.sql"
 
         self.git.write_file(model_path, sql)
 

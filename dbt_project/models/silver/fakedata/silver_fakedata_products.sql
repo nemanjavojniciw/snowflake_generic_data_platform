@@ -1,19 +1,19 @@
 -- GENERATED FILE — DO NOT EDIT MANUALLY
--- source: [[ source_name ]] | table: [[ table_name ]] | strategy: incremental
--- generated_at: [[ generated_at ]]
+-- source: fakedata | table: products | strategy: incremental
+-- generated_at: 2026-06-03T11:21:15.934292Z
 
 {{
     config(
         materialized='incremental',
-        unique_key='[[ primary_keys[0] if primary_keys else "id" ]]',
+        unique_key='id',
         on_schema_change='sync_all_columns',
         incremental_strategy='merge',
-        tags=['silver', 'generated', '[[ source_name ]]']
+        tags=['silver', 'generated', 'fakedata']
     )
 }}
 
 with bronze as (
-    select * from {{ ref('bronze_[[ source_name ]]_[[ table_name ]]') }}
+    select * from {{ ref('bronze_fakedata_products') }}
 
     {% if is_incremental() %}
     where _extracted_at > (select coalesce(max(_extracted_at), '1900-01-01'::timestamp_ntz) from {{ this }})
@@ -22,14 +22,18 @@ with bronze as (
 
 deduped as (
     select
-[% for col_name, col_info in columns.items() %]
-        [[ col_name ]],
-[% endfor %]
+        created_at,
+        id,
+        make,
+        model,
+        price,
+        updated_at,
+        year,
         _raw_id,
         _extracted_at,
         _loaded_at,
         row_number() over (
-            partition by [[ primary_keys | join(', ') if primary_keys else 'id' ]]
+            partition by id
             order by _extracted_at desc
         ) as _rn
 
@@ -38,9 +42,13 @@ deduped as (
 
 silver as (
     select
-[% for col_name, col_info in columns.items() %]
-        [[ col_name ]],
-[% endfor %]
+        created_at,
+        id,
+        make,
+        model,
+        price,
+        updated_at,
+        year,
         _raw_id,
         _extracted_at,
         _loaded_at,

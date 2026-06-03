@@ -17,6 +17,7 @@ Usage:
 
 import json
 import os
+import time
 from typing import Optional
 
 import requests
@@ -29,7 +30,7 @@ class CatalogSyncer:
 
     def __init__(self):
         """Initialize with Airbyte API credentials from environment."""
-        self.api_url = os.getenv("AIRBYTE_API_URL", "http://localhost:8000/api/v1")
+        self.api_url = os.getenv("AIRBYTE_API_URL", "http://localhost:8000/api/public/v1")
         self.client_id = os.getenv("AIRBYTE_CLIENT_ID")
         self.client_secret = os.getenv("AIRBYTE_CLIENT_SECRET")
 
@@ -81,6 +82,61 @@ class CatalogSyncer:
             resp = requests.post(url, json=data, headers=self._headers(), timeout=30, **kwargs)
         resp.raise_for_status()
         return resp.json()
+
+    def _patch(self, endpoint: str, data: dict, **kwargs) -> dict:
+        """PATCH request to Airbyte API."""
+        url = f"{self.api_url}{endpoint}"
+        resp = requests.patch(url, json=data, headers=self._headers(), timeout=30, **kwargs)
+        if resp.status_code == 401:
+            self._access_token = self._get_token()
+            resp = requests.patch(url, json=data, headers=self._headers(), timeout=30, **kwargs)
+        resp.raise_for_status()
+        return resp.json()
+
+    def trigger_sync(self, connection_id: str, wait: bool = True, poll_interval: int = 5) -> dict:
+        """
+        Trigger an Airbyte sync job and optionally poll until it completes.
+
+        Args:
+            connection_id: Airbyte connection UUID
+            wait: Block until the job finishes (default True)
+            poll_interval: Seconds between status polls
+
+        Returns:
+            Final job dict with keys: jobId, status, startTime, duration
+        """
+        resp = self._post("/jobs", {"connectionId": connection_id, "jobType": "sync"})
+        job_id = resp["jobId"]
+        print(f"  ▶  Job {job_id} started")
+
+        if not wait:
+            return resp
+
+        while True:
+            time.sleep(poll_interval)
+            job = self._get(f"/jobs/{job_id}")
+            status = job.get("status", "running")
+
+            if status == "running":
+                print(f"  ⏳ {status}...")
+            elif status == "succeeded":
+                print(f"  ✅ Sync completed (job {job_id})")
+                return job
+            else:
+                raise RuntimeError(f"Airbyte sync failed with status '{status}' (job {job_id})")
+
+    def set_connection_namespace(self, connection_id: str, source_name: str) -> None:
+        """
+        Patch the Airbyte connection so data lands in GENERIC_AIRBYTE_LANDING.{source_name}.
+        Must be called before the first sync so tables are created in the right schema.
+        """
+        self._patch(
+            f"/connections/{connection_id}",
+            {
+                "namespaceDefinition": "custom_format",
+                "namespaceFormat": source_name,
+            },
+        )
 
     def get_connections(self) -> list[dict]:
         """
@@ -235,11 +291,12 @@ class CatalogSyncer:
                 stream_name = config.get("name")
                 json_schema = config.get("jsonSchema", {})
 
-            if not stream_name or not json_schema:
+            if not stream_name:
                 continue
 
-            # Extract columns from schema
-            columns = self.extract_columns(json_schema)
+            # jsonSchema is absent from Airbyte public API v1 connection responses —
+            # columns are populated later by sync_from_landing() after data arrives.
+            columns = self.extract_columns(json_schema) if json_schema else {}
 
             # Upsert to registry (detects changes)
             diff = self.registry.upsert_schema_registry(
@@ -259,6 +316,71 @@ class CatalogSyncer:
             "type_changes_by_table": {},
         }
 
+        for table_name, diff in diffs:
+            if diff["new_columns"]:
+                aggregated["new_columns_by_table"][table_name] = diff["new_columns"]
+            if diff["removed_columns"]:
+                aggregated["removed_columns_by_table"][table_name] = diff["removed_columns"]
+            if diff["type_changes"]:
+                aggregated["type_changes_by_table"][table_name] = diff["type_changes"]
+
+        return aggregated
+
+    def sync_from_landing(self, source_name: str) -> dict:
+        """
+        Read column schemas directly from GENERIC_AIRBYTE_LANDING.INFORMATION_SCHEMA
+        after Airbyte has loaded data. More reliable than the Airbyte API because the
+        public API v1 does not return jsonSchema in connection responses.
+
+        Args:
+            source_name: Source name (used as schema name in the landing database)
+
+        Returns:
+            Aggregated diff report across all discovered tables
+        """
+        sql = """
+            SELECT table_name, column_name, data_type, is_nullable
+            FROM GENERIC_AIRBYTE_LANDING.INFORMATION_SCHEMA.COLUMNS
+            WHERE LOWER(table_schema) = LOWER(%s)
+              AND LEFT(column_name, 1) != '_'
+            ORDER BY table_name, ordinal_position
+        """
+        cursor = self.registry._execute(sql, (source_name,))
+        rows = self.registry._fetchall_as_dicts(cursor)
+
+        if not rows:
+            print(f"  ⚠️  No tables found in GENERIC_AIRBYTE_LANDING.{source_name}. "
+                  f"Run the Airbyte sync first.")
+            return {"has_changes": False, "new_tables": [], "all_tables": [],
+                    "new_columns_by_table": {}, "removed_columns_by_table": {}, "type_changes_by_table": {}}
+
+        # Group columns by table
+        tables: dict[str, dict] = {}
+        for row in rows:
+            tbl = row["table_name"].lower()
+            col = row["column_name"].lower()
+            tables.setdefault(tbl, {})[col] = {
+                "type": row["data_type"].lower(),
+                "nullable": row["is_nullable"] == "YES",
+            }
+
+        diffs = []
+        for table_name, columns in tables.items():
+            diff = self.registry.upsert_schema_registry(
+                source_name=source_name,
+                table_name=table_name,
+                columns=columns,
+            )
+            diffs.append((table_name, diff))
+
+        aggregated = {
+            "has_changes": any(d["has_changes"] for _, d in diffs),
+            "new_tables": [name for name, d in diffs if d["is_new"]],
+            "all_tables": [name for name, _ in diffs],
+            "new_columns_by_table": {},
+            "removed_columns_by_table": {},
+            "type_changes_by_table": {},
+        }
         for table_name, diff in diffs:
             if diff["new_columns"]:
                 aggregated["new_columns_by_table"][table_name] = diff["new_columns"]

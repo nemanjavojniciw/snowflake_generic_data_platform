@@ -41,8 +41,9 @@ class GitClient:
             repo_path = os.getcwd()
 
         try:
-            self.repo = Repo(repo_path)
-            self.repo_path = Path(repo_path)
+            # search_parent_directories=True walks up until it finds .git
+            self.repo = Repo(repo_path, search_parent_directories=True)
+            self.repo_path = Path(self.repo.working_tree_dir)
         except InvalidGitRepositoryError:
             raise ValueError(f"Not a git repository: {repo_path}")
 

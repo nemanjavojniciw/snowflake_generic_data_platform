@@ -112,7 +112,7 @@ def build_source_dag(source: dict) -> DAG:
             task_id="trigger_airbyte_sync",
             airbyte_conn_id="airbyte_local",
             connection_id=airbyte_conn_id,
-            asynchronous=True,
+            asynchronous=False,  # block until Airbyte sync completes before running dbt
         )
 
         # ────────────────────────────────────────────────────────────────────────────
@@ -175,12 +175,10 @@ def build_source_dag(source: dict) -> DAG:
 
             result = subprocess.run(
                 [
-                    "dbt",
-                    "run",
-                    "--select",
-                    f"tag:{source_name}",
-                    "--project-dir",
-                    "dbt_project",
+                    "dbt", "run",
+                    "--select", f"tag:{source_name}",
+                    "--project-dir", "/opt/dbt",
+                    "--profiles-dir", "/opt/dbt",
                 ],
                 capture_output=True,
                 text=True,
@@ -198,12 +196,10 @@ def build_source_dag(source: dict) -> DAG:
 
             result = subprocess.run(
                 [
-                    "dbt",
-                    "test",
-                    "--select",
-                    f"tag:{source_name}",
-                    "--project-dir",
-                    "dbt_project",
+                    "dbt", "test",
+                    "--select", f"tag:{source_name}",
+                    "--project-dir", "/opt/dbt",
+                    "--profiles-dir", "/opt/dbt",
                 ],
                 capture_output=True,
                 text=True,

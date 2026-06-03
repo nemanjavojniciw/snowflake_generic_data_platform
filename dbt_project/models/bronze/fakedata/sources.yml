@@ -1,0 +1,82 @@
+
+version: 2
+
+sources:
+  - name: raw_fakedata
+    database: GENERIC_AIRBYTE_LANDING
+    schema: GENERIC_AIRBYTE_LANDING
+    tables:
+      - name: products
+        description: "Raw Airbyte data for fakedata.products"
+        config:
+          loaded_at_field: _airbyte_loaded_at
+          freshness:
+            warn_after: {count: 24, period: hour}
+            error_after: {count: 48, period: hour}
+        columns:
+          - name: _airbyte_raw_id
+            tests: [unique, not_null]
+          - name: _airbyte_extracted_at
+            tests: [not_null]
+          - name: _airbyte_loaded_at
+          - name: created_at
+          - name: id
+          - name: make
+          - name: model
+          - name: price
+          - name: updated_at
+          - name: year
+
+      - name: purchases
+        description: "Raw Airbyte data for fakedata.purchases"
+        config:
+          loaded_at_field: _airbyte_loaded_at
+          freshness:
+            warn_after: {count: 24, period: hour}
+            error_after: {count: 48, period: hour}
+        columns:
+          - name: _airbyte_raw_id
+            tests: [unique, not_null]
+          - name: _airbyte_extracted_at
+            tests: [not_null]
+          - name: _airbyte_loaded_at
+          - name: added_to_cart_at
+          - name: created_at
+          - name: id
+          - name: product_id
+          - name: purchased_at
+          - name: returned_at
+          - name: updated_at
+          - name: user_id
+
+      - name: users
+        description: "Raw Airbyte data for fakedata.users"
+        config:
+          loaded_at_field: _airbyte_loaded_at
+          freshness:
+            warn_after: {count: 24, period: hour}
+            error_after: {count: 48, period: hour}
+        columns:
+          - name: _airbyte_raw_id
+            tests: [unique, not_null]
+          - name: _airbyte_extracted_at
+            tests: [not_null]
+          - name: _airbyte_loaded_at
+          - name: academic_degree
+          - name: address
+          - name: age
+          - name: blood_type
+          - name: created_at
+          - name: email
+          - name: gender
+          - name: height
+          - name: id
+          - name: language
+          - name: name
+          - name: nationality
+          - name: occupation
+          - name: telephone
+          - name: title
+          - name: updated_at
+          - name: weight
+

@@ -53,68 +53,47 @@ class EvolutionHandler:
             "alerts": [],
         }
 
-        # New tables — generate both bronze and silver
-        if diff_report.get("new_tables"):
-            for table_name in diff_report["new_tables"]:
-                print(f"  🆕 New table: {source_name}.{table_name}")
-                summary["actions"].append(f"new_table:{table_name}")
+        needs_regen = False
 
-                try:
-                    # Generate bronze and silver
-                    bronze_files = self.bronze_gen.generate_source(source_name)
-                    silver_files = self.silver_gen.generate_source(source_name)
-                    summary["regenerated_models"].extend(bronze_files + silver_files)
-                except Exception as e:
-                    print(f"    ❌ Error generating models: {e}")
-                    summary["alerts"].append(f"Generation failed for {table_name}: {e}")
+        # New tables
+        for table_name in diff_report.get("new_tables", []):
+            print(f"  🆕 New table: {source_name}.{table_name}")
+            summary["actions"].append(f"new_table:{table_name}")
+            needs_regen = True
 
-        # New columns — regenerate bronze and silver for affected tables
-        if diff_report.get("new_columns_by_table"):
-            for table_name, columns in diff_report["new_columns_by_table"].items():
-                print(f"  ➕ New columns in {table_name}: {', '.join(columns)}")
-                summary["actions"].append(f"new_columns:{table_name}")
+        # New columns
+        for table_name, columns in diff_report.get("new_columns_by_table", {}).items():
+            print(f"  ➕ New columns in {table_name}: {', '.join(columns)}")
+            summary["actions"].append(f"new_columns:{table_name}")
+            needs_regen = True
 
-                try:
-                    bronze_files = self.bronze_gen.generate_source(source_name)
-                    silver_files = self.silver_gen.generate_source(source_name)
-                    summary["regenerated_models"].extend(bronze_files + silver_files)
-                except Exception as e:
-                    print(f"    ❌ Error regenerating models: {e}")
-                    summary["alerts"].append(f"Regeneration failed for {table_name}: {e}")
+        # Removed columns — soft deprecate first, then regen once
+        for table_name, columns in diff_report.get("removed_columns_by_table", {}).items():
+            print(f"  ➖ Removed columns in {table_name}: {', '.join(columns)}")
+            summary["actions"].append(f"removed_columns:{table_name}")
+            for col in columns:
+                self.registry.soft_deprecate_column(source_name, table_name, col)
+            needs_regen = True
 
-        # Removed columns — soft deprecate, regenerate with null fill
-        if diff_report.get("removed_columns_by_table"):
-            for table_name, columns in diff_report["removed_columns_by_table"].items():
-                print(f"  ➖ Removed columns in {table_name}: {', '.join(columns)}")
-                summary["actions"].append(f"removed_columns:{table_name}")
+        # Type changes — alert only, no regen needed
+        for table_name, changes in diff_report.get("type_changes_by_table", {}).items():
+            print(f"  🔄 Type changes in {table_name}:")
+            for change in changes:
+                print(f"     {change['column']}: {change['old_type']} → {change['new_type']}")
+            summary["actions"].append(f"type_changes:{table_name}")
+            summary["alerts"].append(
+                f"Type changes in {source_name}.{table_name} — review before deploying."
+            )
 
-                for col in columns:
-                    self.registry.soft_deprecate_column(source_name, table_name, col)
-
-                # Regenerate to add null fill
-                try:
-                    bronze_files = self.bronze_gen.generate_source(source_name)
-                    silver_files = self.silver_gen.generate_source(source_name)
-                    summary["regenerated_models"].extend(bronze_files + silver_files)
-                except Exception as e:
-                    print(f"    ❌ Error regenerating models: {e}")
-                    summary["alerts"].append(
-                        f"Removed columns from {table_name}. "
-                        f"Models regenerated with null fills. Check and commit manually."
-                    )
-
-        # Type changes — explicit cast in bronze, alert owner
-        if diff_report.get("type_changes_by_table"):
-            for table_name, changes in diff_report["type_changes_by_table"].items():
-                print(f"  🔄 Type changes in {table_name}:")
-                for change in changes:
-                    print(f"     {change['column']}: {change['old_type']} → {change['new_type']}")
-
-                summary["actions"].append(f"type_changes:{table_name}")
-                summary["alerts"].append(
-                    f"Type changes detected in {source_name}.{table_name}. "
-                    f"Review and test models before deploying."
-                )
+        # Generate once per source, not once per table
+        if needs_regen:
+            try:
+                bronze_files = self.bronze_gen.generate_source(source_name)
+                silver_files = self.silver_gen.generate_source(source_name)
+                summary["regenerated_models"].extend(bronze_files + silver_files)
+            except Exception as e:
+                print(f"    ❌ Error regenerating models: {e}")
+                summary["alerts"].append(f"Generation failed: {e}")
 
         # Commit all generated files
         if summary["regenerated_models"]:

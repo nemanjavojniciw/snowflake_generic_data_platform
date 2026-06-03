@@ -1,34 +1,32 @@
--- GENERATED FILE — DO NOT EDIT MANUALLY
--- source: {{ source_name }} | generated_at: {{ generated_at }}
+[# GENERATED FILE — DO NOT EDIT MANUALLY #]
+[# source: [[ source_name ]] | generated_at: [[ generated_at ]] #]
 
 version: 2
 
 sources:
-  - name: raw_{{ source_name }}
-    database: RAW
-    schema: {{ source_name }}
+  - name: raw_[[ source_name ]]
+    database: GENERIC_AIRBYTE_LANDING
+    schema: GENERIC_AIRBYTE_LANDING
     tables:
-{% for table in tables %}
-      - name: {{ table.table_name }}
-        identifier: _airbyte_raw_{{ table.table_name }}
-        description: "Raw Airbyte data for {{ source_name }}.{{ table.table_name }}"
-        loaded_at_field: _airbyte_loaded_at
-        freshness:
-          warn_after: {count: 24, period: hour}
-          error_after: {count: 48, period: hour}
+[% for table in tables %]
+      - name: [[ table.table_name ]]
+        description: "Raw Airbyte data for [[ source_name ]].[[ table.table_name ]]"
+        config:
+          loaded_at_field: _airbyte_loaded_at
+          freshness:
+            warn_after: {count: 24, period: hour}
+            error_after: {count: 48, period: hour}
         columns:
           - name: _airbyte_raw_id
             tests: [unique, not_null]
           - name: _airbyte_extracted_at
             tests: [not_null]
           - name: _airbyte_loaded_at
-{% for col_name, col_info in table.columns.items() %}
-{% if col_name not in ['_airbyte_raw_id', '_airbyte_extracted_at', '_airbyte_loaded_at', '_airbyte_data'] %}
-          - name: {{ col_name }}
-{% if col_name in table.primary_keys %}
+[% for col_name, col_info in table.columns.items() %]
+          - name: [[ col_name ]]
+[% if col_name in table.primary_keys %]
             tests: [not_null]
-{% endif %}
-{% endif %}
-{% endfor %}
+[% endif %]
+[% endfor %]
 
-{% endfor %}
+[% endfor %]

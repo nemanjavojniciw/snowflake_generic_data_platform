@@ -230,6 +230,22 @@ SQL_STATEMENTS = [
         created_at          TIMESTAMP_NTZ   DEFAULT CURRENT_TIMESTAMP()
     ) COMMENT = 'Pipeline execution history and metrics'""",
 
+    # ── Future schema/stage grants for LOADER_ROLE (covers Airbyte-created schemas) ──
+    "GRANT CREATE STAGE ON FUTURE SCHEMAS IN DATABASE GENERIC_AIRBYTE_LANDING TO ROLE LOADER_ROLE",
+    "GRANT ALL          ON FUTURE STAGES  IN DATABASE GENERIC_AIRBYTE_LANDING TO ROLE LOADER_ROLE",
+    # airbyte_internal is created by Airbyte at runtime with lowercase name — quoted for exact match
+    'GRANT ALL ON SCHEMA GENERIC_AIRBYTE_LANDING."airbyte_internal"                            TO ROLE LOADER_ROLE',
+    'GRANT ALL ON ALL    STAGES IN SCHEMA GENERIC_AIRBYTE_LANDING."airbyte_internal"           TO ROLE LOADER_ROLE',
+    'GRANT ALL ON FUTURE STAGES IN SCHEMA GENERIC_AIRBYTE_LANDING."airbyte_internal"           TO ROLE LOADER_ROLE',
+    'GRANT ALL ON ALL    TABLES IN SCHEMA GENERIC_AIRBYTE_LANDING."airbyte_internal"           TO ROLE LOADER_ROLE',
+    'GRANT ALL ON FUTURE TABLES IN SCHEMA GENERIC_AIRBYTE_LANDING."airbyte_internal"           TO ROLE LOADER_ROLE',
+
+    # ── Platform schema grants for PLATFORM_ADMIN ──────────────────────────────
+    # Tables are created by SYSADMIN, so explicit grants are needed
+    "GRANT USAGE          ON SCHEMA GENERIC_PLATFORM.PUBLIC                  TO ROLE PLATFORM_ADMIN",
+    "GRANT ALL PRIVILEGES ON ALL    TABLES IN SCHEMA GENERIC_PLATFORM.PUBLIC TO ROLE PLATFORM_ADMIN",
+    "GRANT ALL PRIVILEGES ON FUTURE TABLES IN SCHEMA GENERIC_PLATFORM.PUBLIC TO ROLE PLATFORM_ADMIN",
+
     # ── Cleanup Task ───────────────────────────────────────────────────────────
     """CREATE OR REPLACE TASK GENERIC_PLATFORM.PUBLIC.cleanup_old_landing_data
         WAREHOUSE = PLATFORM_WH
