@@ -1,21 +1,23 @@
 #!/usr/bin/env bash
 # setup_env.sh - Snowflake Generic Data Platform local environment bootstrap
 # Run from repo root:  bash scripts/setup_env.sh
-# Self-contained: checks every prerequisite, asks to install if missing.
+#
+# Python is managed entirely by uv — no system Python or pyenv needed.
+# Node.js is managed by nvm.
 #
 # Prerequisites handled automatically:
-#   pyenv   (Python version manager)
-#   Python 3.11.9 (via pyenv)
+#   uv      (Python + venv manager — installs Python 3.11 itself)
 #   nvm     (Node.js version manager)
 #   Node.js 18 (via nvm)
 #   Docker Desktop
+#   abctl   (Airbyte CLI)
 
 set -euo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ROOT=$(dirname "$SCRIPT_DIR")
 
-PYTHON_VERSION="3.11.9"
+PYTHON_VERSION="3.11"
 NODE_VERSION="18"
 VENV_DIR="$ROOT/.venv"
 
@@ -28,7 +30,6 @@ info() { echo -e "  ${GRAY}[INFO]${NC} $1"; }
 fail() { echo -e "  ${RED}[FAIL]${NC} $1"; exit 1; }
 
 ask_yn() {
-    # Usage: ask_yn "Prompt text" [default_no]
     local prompt="$1"
     local default_no="${2:-}"
     local hint="[Y/n]"
@@ -47,70 +48,54 @@ OS=$(uname -s)
 echo "Repo root: $ROOT"
 
 # ==============================================================================
-# pyenv
+# uv  (Python + virtualenv manager — no system Python required)
 # ==============================================================================
-step "pyenv  (Python version manager)"
+step "uv  (Python + venv manager)"
 
-export PYENV_ROOT="${PYENV_ROOT:-$HOME/.pyenv}"
-export PATH="$PYENV_ROOT/bin:$PATH"
+# Load uv from its default install location if not yet on PATH
+export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 
-if ! command -v pyenv &>/dev/null; then
-    if ask_yn "pyenv not found. Install it?"; then
-        info "Installing pyenv..."
-        if [ "$OS" = "Darwin" ] && command -v brew &>/dev/null; then
-            brew install pyenv
+if ! command -v uv &>/dev/null; then
+    if ask_yn "uv not found. Install it? (recommended — manages Python 3.11 automatically)"; then
+        info "Installing uv..."
+        if [ "$OS" = "Darwin" ] || [ "$OS" = "Linux" ]; then
+            curl -LsSf https://astral.sh/uv/install.sh | sh
+            # Reload PATH so uv is available immediately
+            export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
         else
-            curl -fsSL https://pyenv.run | bash
+            # Windows (Git Bash / WSL2)
+            curl -LsSf https://astral.sh/uv/install.sh | sh
+            export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
         fi
 
-        # Load pyenv for the rest of this script
-        export PYENV_ROOT="$HOME/.pyenv"
-        export PATH="$PYENV_ROOT/bin:$PATH"
-
-        if ! command -v pyenv &>/dev/null; then
-            warn "pyenv installed but not yet in PATH."
-            warn "Add the following to your shell profile (~/.bashrc or ~/.zshrc):"
-            echo '    export PYENV_ROOT="$HOME/.pyenv"'
-            echo '    export PATH="$PYENV_ROOT/bin:$PATH"'
-            echo '    eval "$(pyenv init -)"'
+        if ! command -v uv &>/dev/null; then
+            warn "uv installed but not yet in PATH."
+            warn "Add to your shell profile (~/.bashrc or ~/.zshrc):"
+            echo '    export PATH="$HOME/.local/bin:$PATH"'
             warn "Then restart your shell and rerun this script."
             exit 0
         fi
-        ok "pyenv installed"
+        ok "uv installed"
     else
-        fail "pyenv is required. Install from: https://github.com/pyenv/pyenv"
+        fail "uv is required. Install from: https://docs.astral.sh/uv/getting-started/installation/"
     fi
 else
-    ok "pyenv $(pyenv --version)"
+    ok "uv $(uv --version)"
 fi
-
-eval "$(pyenv init -)"
-
-# Install target Python version if missing
-info "Checking Python $PYTHON_VERSION..."
-if ! pyenv versions --bare | grep -qx "$PYTHON_VERSION"; then
-    info "Installing Python $PYTHON_VERSION (this takes a few minutes)..."
-    pyenv install "$PYTHON_VERSION"
-fi
-
-pyenv local "$PYTHON_VERSION"
-ok "Python $PYTHON_VERSION set as local version"
-
-PYTHON_CMD="$(pyenv which python)"
-ok "python -> $PYTHON_CMD"
 
 # ==============================================================================
-# Virtual environment
+# Virtual environment  (Python 3.11 bundled by uv — no system Python needed)
 # ==============================================================================
 step "Virtual environment  ($VENV_DIR)"
 
 if [ -d "$VENV_DIR" ]; then
     ok "Already exists - skipping creation"
 else
-    "$PYTHON_CMD" -m venv "$VENV_DIR"
-    ok "Created $VENV_DIR"
+    uv venv "$VENV_DIR" --python "$PYTHON_VERSION"
+    ok "Created $VENV_DIR with Python $PYTHON_VERSION"
 fi
 
+# Activate so subsequent uv pip / pip calls land in the venv
 # shellcheck disable=SC1091
 source "$VENV_DIR/bin/activate"
 ok "Virtual environment activated"
@@ -119,22 +104,25 @@ ok "Virtual environment activated"
 # Python dependencies
 # ==============================================================================
 step "Python dependencies"
-pip install --upgrade pip -q
+
 REQ_FILE="$SCRIPT_DIR/requirements.txt"
 if [ -f "$REQ_FILE" ]; then
-    pip install -r "$REQ_FILE"
+    uv pip install -r "$REQ_FILE"
     ok "Installed from scripts/requirements.txt"
 else
     warn "scripts/requirements.txt not found - skipping"
 fi
 
+step "Platform CLI"
+uv pip install -e "$ROOT"
+ok "'platform' command installed"
+
 # ==============================================================================
-# nvm
+# nvm  (Node.js version manager)
 # ==============================================================================
 step "nvm  (Node.js version manager)"
 
 export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
-# Try loading nvm if already installed
 [ -s "$NVM_DIR/nvm.sh" ] && source "$NVM_DIR/nvm.sh" || true
 
 if ! command -v nvm &>/dev/null; then
@@ -146,7 +134,7 @@ if ! command -v nvm &>/dev/null; then
         source "$NVM_DIR/nvm.sh"
 
         if ! command -v nvm &>/dev/null; then
-            warn "nvm installed but not yet in PATH. Restart shell, then run:"
+            warn "nvm installed but not yet in PATH. Restart your shell, then run:"
             echo "    nvm install $NODE_VERSION && nvm use $NODE_VERSION"
         else
             ok "nvm installed"
@@ -158,7 +146,6 @@ else
     ok "nvm $(nvm --version)"
 fi
 
-# Install and activate Node.js if nvm is available
 if command -v nvm &>/dev/null; then
     info "Ensuring Node.js $NODE_VERSION is installed..."
     nvm install "$NODE_VERSION"
@@ -189,7 +176,7 @@ if ! command -v docker &>/dev/null; then
             warn "Log out and back in for docker group to take effect, then rerun this script."
             exit 0
         else
-            fail "Unsupported OS for auto-install. Install Docker manually: https://www.docker.com/products/docker-desktop/"
+            fail "Install Docker Desktop manually: https://www.docker.com/products/docker-desktop/"
         fi
     else
         fail "Docker is required. Install from: https://www.docker.com/products/docker-desktop/"
@@ -198,7 +185,7 @@ else
     if docker info &>/dev/null; then
         ok "$(docker --version) - daemon running"
     else
-        warn "Docker installed but daemon not running. Start Docker Desktop, then run step 2 below."
+        warn "Docker installed but daemon not running. Start Docker Desktop, then rerun this script."
     fi
 fi
 
@@ -213,49 +200,52 @@ if [ -f "$ENV_FILE" ]; then
 elif [ -f "$ENV_EXAMPLE" ]; then
     cp "$ENV_EXAMPLE" "$ENV_FILE"
     ok "Copied compose/.env.example -> compose/.env"
-    warn "Open compose/.env and fill in your Snowflake credentials!"
+    warn "Open compose/.env and fill in your Snowflake + Airbyte credentials!"
 else
     warn "compose/.env.example not found - skipping"
 fi
 
 # ==============================================================================
-# Airbyte (clone optional)
+# abctl  (Airbyte CLI — manages Airbyte OSS via a local k3d cluster)
 # ==============================================================================
-step "Airbyte OSS"
-AIRBYTE_DIR="$ROOT/local/airbyte"
-if [ -d "$AIRBYTE_DIR" ]; then
-    ok "local/airbyte already cloned"
+step "abctl  (Airbyte CLI)"
+
+if command -v abctl &>/dev/null; then
+    ok "abctl $(abctl version 2>/dev/null | head -1 || echo 'found')"
 else
-    if ask_yn "Airbyte not cloned. Clone it now? (~1 GB download)"; then
-        if ! command -v git &>/dev/null; then
-            warn "git not found - cannot clone. Install git and run manually."
+    if ask_yn "abctl not found. Install it?"; then
+        if [ "$OS" = "Darwin" ] && command -v brew &>/dev/null; then
+            brew install airbytehq/tap/abctl
+            ok "abctl installed via Homebrew"
+        elif [ "$OS" = "Darwin" ] || [ "$OS" = "Linux" ]; then
+            curl -LsfS https://get.airbyte.com | bash -s
+            ok "abctl installed"
         else
-            mkdir -p "$ROOT/local"
-            git clone https://github.com/airbytehq/airbyte.git "$AIRBYTE_DIR"
-            ok "Cloned to local/airbyte"
-            info "Start Airbyte: cd local/airbyte && bash run-ab-platform.sh"
+            warn "Windows detected. Download abctl manually from:"
+            warn "  https://github.com/airbytehq/abctl/releases/latest"
+            warn "Add the binary to your PATH, then rerun this script."
+            exit 0
         fi
     else
-        info "Skipped. Clone later: git clone https://github.com/airbytehq/airbyte.git local/airbyte"
+        warn "abctl skipped. Airbyte will not be available."
+        warn "Install from: https://github.com/airbytehq/abctl/releases/latest"
     fi
 fi
 
-# ==============================================================================
-# Astro CLI (optional)
-# ==============================================================================
-step "Astro CLI  (optional - alternative Airflow runner)"
-if command -v astro &>/dev/null; then
-    ok "Astro CLI found"
-else
-    if ask_yn "Astro CLI not found. Install it? (optional)" "default_no"; then
-        if [ "$OS" = "Darwin" ] && command -v brew &>/dev/null; then
-            brew install astro
-        else
-            curl -sSL install.astronomer.io | sudo bash
-        fi
-        ok "Astro CLI installed"
+# Install Airbyte (idempotent — safe to run again; skips if already running)
+if command -v abctl &>/dev/null; then
+    if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "airbyte-abctl-control-plane"; then
+        ok "Airbyte already installed (container running)"
     else
-        info "Skipped. Use Docker Compose: docker compose -f compose/docker-compose.yml up -d"
+        if ask_yn "Airbyte not yet installed. Run 'abctl local install' now? (takes ~5 min first time)"; then
+            abctl local install
+            ok "Airbyte installed"
+            info "Get Airbyte credentials: abctl local credentials"
+            info "Copy client-id and client-secret into compose/.env"
+        else
+            info "Skipped. Install later: abctl local install"
+            info "Then get credentials: abctl local credentials"
+        fi
     fi
 fi
 
@@ -268,11 +258,15 @@ echo -e "${CYAN}  Environment bootstrap complete!${NC}"
 echo -e "${CYAN}==================================================${NC}"
 echo ""
 echo "Next steps (from repo root: $ROOT):"
-echo "  1. Edit compose/.env with your Snowflake credentials"
-echo "  2. Start Airflow:  docker compose -f compose/docker-compose.yml up -d"
-echo "  3. Start Airbyte:  cd local/airbyte && bash run-ab-platform.sh"
-echo "  4. Init Snowflake: python platform/scripts/init_snowflake.py"
-echo "  5. Health check:   python platform/scripts/health_check.py"
+echo "  1. Get Airbyte credentials: abctl local credentials"
+echo "  2. Edit compose/.env with your Snowflake + Airbyte credentials"
+echo "  3. Init Snowflake:          python sgdp/scripts/init_snowflake.py"
+echo "  4. Start Airflow:           docker compose -f compose/docker-compose.yml up -d"
+echo "  5. Health check:            python sgdp/scripts/health_check.py"
+echo ""
+echo "  Daily startup: compose/start.bat  (Windows)  or  make -C compose up"
 echo ""
 echo "  Airflow UI -> http://localhost:8080  (admin / admin)"
 echo "  Airbyte UI -> http://localhost:8000"
+echo ""
+echo "  See STARTUP.md for full documentation."

@@ -152,6 +152,107 @@ class CatalogSyncer:
         except requests.RequestException as e:
             raise RuntimeError(f"Failed to fetch Airbyte connections: {e}") from e
 
+    @staticmethod
+    def _flatten_pk(raw_pk: list) -> list:
+        """Flatten Airbyte's list-of-lists PK format: [["id"]] -> ["id"]."""
+        return [
+            (entry[0] if isinstance(entry, list) and entry else entry)
+            for entry in raw_pk
+            if entry
+        ]
+
+    def get_stream_catalog(self, connection_id: str) -> dict:
+        """
+        Build a stream catalog without requiring a sync.
+
+        Tries three sources in order, merging the best available info:
+          1. GET /streams?sourceId=...  — stream names, sync modes, source-defined PKs
+          2. GET /connections/{id}      — configured PKs set by the user in Airbyte UI
+          3. GET /connections/{id}      — jsonSchema if present in configurations.streams
+                                          (some connector versions include it)
+
+        Column schemas are NOT available via the public API v1 before a sync.
+        They are populated later by trigger-sync -> sync_from_landing().
+
+        Returns:
+            {stream_name: {columns, source_pk, sync_modes}}  — columns may be empty.
+        """
+        try:
+            conn = self._get(f"/connections/{connection_id}")
+        except Exception as e:
+            print(f"  ⚠️  Could not fetch connection {connection_id}: {e}")
+            return {}
+
+        source_id = conn.get("sourceId")
+        if not source_id:
+            return {}
+
+        # ── Source 2 & 3: configured streams from the connection ──────────────
+        # Build lookup: stream_name -> {primaryKey, jsonSchema}
+        config_streams = conn.get("configurations", {}).get("streams", [])
+        config_lookup: dict = {}
+        for cs in config_streams:
+            n = cs.get("name") or cs.get("streamName")
+            if not n:
+                continue
+            raw_pk = cs.get("primaryKey", [])
+            json_schema = cs.get("jsonSchema", {})
+            config_lookup[n] = {
+                "pk": self._flatten_pk(raw_pk) if raw_pk else [],
+                "columns": self.extract_columns(json_schema) if json_schema else {},
+            }
+
+        # ── Source 1: /streams discovery endpoint ────────────────────────────
+        discovery_streams: list = []
+        try:
+            result = self._get("/streams", params={"sourceId": source_id, "ignoreCache": "false"})
+            # Public API v1 returns a bare list; some versions wrap it in {"data": [...]}
+            if isinstance(result, list):
+                discovery_streams = result
+            else:
+                discovery_streams = result.get("data", result.get("streams", []))
+        except Exception as e:
+            print(f"  ⚠️  /streams discovery failed: {e}. Using connection config only.")
+
+        # ── Merge all sources ─────────────────────────────────────────────────
+        catalog: dict = {}
+
+        for stream in discovery_streams:
+            # Public API v1 uses "streamName"; internal API uses "name"
+            name = stream.get("streamName") or stream.get("name")
+            if not name:
+                continue
+
+            # Prefer source-defined PK; fall back to connection-configured PK
+            raw_pk = stream.get("sourceDefinedPrimaryKey", [])
+            source_pk = self._flatten_pk(raw_pk)
+            if not source_pk:
+                source_pk = config_lookup.get(name, {}).get("pk", [])
+
+            # jsonSchema not available from /streams in public API; try config lookup
+            json_schema = stream.get("jsonSchema", {})
+            columns = self.extract_columns(json_schema) if json_schema else config_lookup.get(name, {}).get("columns", {})
+
+            # Public API uses "syncModes"; internal uses "supportedSyncModes"
+            sync_modes = stream.get("syncModes") or stream.get("supportedSyncModes", [])
+
+            catalog[name] = {
+                "columns": columns,
+                "source_pk": source_pk,
+                "sync_modes": sync_modes,
+            }
+
+        # If /streams returned nothing, fall back to connection config streams only
+        if not catalog and config_lookup:
+            for name, info in config_lookup.items():
+                catalog[name] = {
+                    "columns": info["columns"],
+                    "source_pk": info["pk"],
+                    "sync_modes": [],
+                }
+
+        return catalog
+
     def get_connection_catalog(self, connection_id: str) -> Optional[dict]:
         """
         Fetch the configured catalog for a connection.

@@ -2,12 +2,12 @@
 version: 2
 
 sources:
-  - name: raw_fakedata
+  - name: raw_fakedatasource
     database: GENERIC_AIRBYTE_LANDING
     schema: GENERIC_AIRBYTE_LANDING
     tables:
       - name: products
-        description: "Raw Airbyte data for fakedata.products"
+        description: "Raw Airbyte data for fakedatasource.products"
         config:
           loaded_at_field: _airbyte_loaded_at
           freshness:
@@ -28,7 +28,7 @@ sources:
           - name: year
 
       - name: purchases
-        description: "Raw Airbyte data for fakedata.purchases"
+        description: "Raw Airbyte data for fakedatasource.purchases"
         config:
           loaded_at_field: _airbyte_loaded_at
           freshness:
@@ -50,7 +50,7 @@ sources:
           - name: user_id
 
       - name: users
-        description: "Raw Airbyte data for fakedata.users"
+        description: "Raw Airbyte data for fakedatasource.users"
         config:
           loaded_at_field: _airbyte_loaded_at
           freshness:

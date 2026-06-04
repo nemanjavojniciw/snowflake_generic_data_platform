@@ -1,18 +1,20 @@
 # setup_env.ps1 - Snowflake Generic Data Platform local environment bootstrap
 # Run from repo root:  .\scripts\setup_env.ps1
-# Self-contained: checks every prerequisite, asks to install if missing.
+#
+# Python is managed entirely by uv -- no system Python or pyenv needed.
+# Node.js is managed by nvm-windows.
 #
 # Prerequisites handled automatically:
-#   uv          (Python version manager + venv + package installer)
-#   Python 3.11.9 (via uv)
-#   nvm-windows (Node.js version manager)
-#   Node.js 18  (via nvm-windows)
+#   uv           (Python + venv manager -- downloads Python 3.11 itself)
+#   nvm-windows  (Node.js version manager)
+#   Node.js 18   (via nvm-windows)
 #   Docker Desktop
+#   abctl        (Airbyte CLI)
 
 $ErrorActionPreference = "Stop"
 
 $ROOT           = Split-Path $PSScriptRoot -Parent
-$PYTHON_VERSION = "3.11.9"
+$PYTHON_VERSION = "3.11"
 $NODE_VERSION   = "18"
 $VENV_DIR       = Join-Path $ROOT ".venv"
 
@@ -45,18 +47,17 @@ function Reload-Path {
 Write-Host "Repo root: $ROOT" -ForegroundColor DarkGray
 
 # ==============================================================================
-# uv  (Python version manager + venv + package installer)
+# uv  (Python + venv manager -- no system Python required)
 # ==============================================================================
-Write-Step "uv  (Python manager)"
+Write-Step "uv  (Python + venv manager)"
 
 $uvBin = "$env:USERPROFILE\.local\bin"
 if ((Test-Path $uvBin) -and ($env:PATH -notlike "*$uvBin*")) { $env:PATH = "$uvBin;$env:PATH" }
 
 if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
     if (Ask-YN "uv not found. Install it?") {
-        Require-Winget
-        Write-Info "Installing uv via winget..."
-        winget install --id astral-sh.uv --accept-source-agreements --accept-package-agreements
+        Write-Info "Installing uv via PowerShell installer..."
+        powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
         Reload-Path
         if ((Test-Path $uvBin) -and ($env:PATH -notlike "*$uvBin*")) { $env:PATH = "$uvBin;$env:PATH" }
         if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
@@ -65,13 +66,13 @@ if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
         }
         Write-OK "uv installed"
     } else {
-        Write-Fail "uv is required. Install from: https://docs.astral.sh/uv/"
+        Write-Fail "uv is required. Install from: https://docs.astral.sh/uv/getting-started/installation/"
     }
 } else {
-    Write-OK "uv $(uv --version)"
+    Write-OK "$(uv --version)"
 }
 
-# Ensure target Python version is available via uv
+# Ensure target Python version is available (uv downloads it if missing)
 Write-Info "Ensuring Python $PYTHON_VERSION is available..."
 uv python install $PYTHON_VERSION
 Write-OK "Python $PYTHON_VERSION ready"
@@ -84,8 +85,8 @@ Write-Step "Virtual environment  ($VENV_DIR)"
 if (Test-Path $VENV_DIR) {
     Write-OK "Already exists - skipping creation"
 } else {
-    uv venv --python $PYTHON_VERSION $VENV_DIR
-    Write-OK "Created $VENV_DIR"
+    uv venv $VENV_DIR --python $PYTHON_VERSION
+    Write-OK "Created $VENV_DIR with Python $PYTHON_VERSION"
 }
 
 $activateScript = Join-Path $VENV_DIR "Scripts\Activate.ps1"
@@ -97,6 +98,7 @@ Write-OK "Virtual environment activated"
 # Python dependencies
 # ==============================================================================
 Write-Step "Python dependencies"
+
 $reqFile = Join-Path $PSScriptRoot "requirements.txt"
 if (Test-Path $reqFile) {
     uv pip install -r $reqFile
@@ -105,12 +107,15 @@ if (Test-Path $reqFile) {
     Write-Warn "scripts\requirements.txt not found - skipping"
 }
 
+Write-Step "Platform CLI"
+uv pip install -e $ROOT
+Write-OK "'platform' command installed"
+
 # ==============================================================================
-# nvm-windows
+# nvm-windows  (Node.js version manager)
 # ==============================================================================
 Write-Step "nvm-windows  (Node.js version manager)"
 
-# Inject nvm path into current session
 $nvmHome = if ($env:NVM_HOME) { $env:NVM_HOME } else { "$env:APPDATA\nvm" }
 if ((Test-Path $nvmHome) -and ($env:PATH -notlike "*$nvmHome*")) { $env:PATH = "$nvmHome;$env:PATH" }
 
@@ -125,7 +130,8 @@ if (-not (Get-Command nvm -ErrorAction SilentlyContinue)) {
 
         if (-not (Get-Command nvm -ErrorAction SilentlyContinue)) {
             Write-Warn "nvm-windows installed but not yet available in this session."
-            Write-Warn "Restart your terminal, then run:  nvm install $NODE_VERSION  &&  nvm use $NODE_VERSION"
+            Write-Warn "Restart your terminal, then run:  nvm install $NODE_VERSION"
+            Write-Warn "                             and: nvm use $NODE_VERSION"
         } else {
             Write-OK "nvm-windows installed"
         }
@@ -136,24 +142,26 @@ if (-not (Get-Command nvm -ErrorAction SilentlyContinue)) {
     Write-OK "nvm-windows $(nvm version)"
 }
 
-# Install and activate Node.js if nvm is available
 if (Get-Command nvm -ErrorAction SilentlyContinue) {
     Write-Info "Ensuring Node.js $NODE_VERSION is installed..."
     nvm install $NODE_VERSION | Out-Null
 
-    # nvm use creates/updates a symlink — requires admin on Windows.
-    # Skip it if the correct version is already active; warn instead of prompting UAC.
-    $isAdmin       = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-    $activeVersion = if (Get-Command node -ErrorAction SilentlyContinue) { node --version 2>&1 } else { "" }
+    # 'nvm use' updates a symlink and requires admin on Windows.
+    # Skip if the correct version is already active to avoid a UAC prompt.
+    $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    $activeVersion = ""
+    if (Get-Command node -ErrorAction SilentlyContinue) {
+        $activeVersion = (node --version 2>&1)
+    }
 
     if ($activeVersion -like "v$NODE_VERSION*") {
-        Write-OK "Node.js $activeVersion already active — skipping 'nvm use'"
+        Write-OK "Node.js $activeVersion already active"
     } elseif ($isAdmin) {
         nvm use $NODE_VERSION | Out-Null
         Reload-Path
     } else {
-        Write-Warn "Node.js $NODE_VERSION installed but 'nvm use' requires admin to switch the active version."
-        Write-Warn "Either rerun this script as Administrator, or run manually: nvm use $NODE_VERSION"
+        Write-Warn "Node.js $NODE_VERSION installed but 'nvm use' requires admin to activate it."
+        Write-Warn "Rerun as Administrator or run manually: nvm use $NODE_VERSION"
     }
 
     # nvm symlink dir may not be in PATH yet in this session
@@ -161,8 +169,11 @@ if (Get-Command nvm -ErrorAction SilentlyContinue) {
     if ($nvmSymlink -and (Test-Path $nvmSymlink) -and ($env:PATH -notlike "*$nvmSymlink*")) {
         $env:PATH = "$nvmSymlink;$env:PATH"
     }
+
     if (Get-Command node -ErrorAction SilentlyContinue) {
-        Write-OK "Node.js $(node --version)  (npm $(npm --version))"
+        $nodeVer = node --version
+        $npmVer  = npm --version
+        Write-OK "Node.js $nodeVer  (npm $npmVer)"
     } else {
         Write-Warn "Node.js installed but not yet in PATH. Restart your terminal to use node/npm."
     }
@@ -178,7 +189,7 @@ if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
         Require-Winget
         Write-Info "Installing Docker Desktop via winget..."
         winget install --id Docker.DockerDesktop --accept-source-agreements --accept-package-agreements
-        Write-Warn "Docker Desktop installed. A system RESTART is required before it works."
+        Write-Warn "Docker Desktop installed. A system restart is required before it works."
         Write-Warn "After restarting, rerun this script to complete setup."
         exit 0
     } else {
@@ -190,7 +201,7 @@ if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
     if ($dockerRunning) {
         Write-OK "$(docker --version) - daemon running"
     } else {
-        Write-Warn "Docker installed but daemon not running. Start Docker Desktop, then run step 2 below."
+        Write-Warn "Docker installed but daemon not running. Start Docker Desktop, then rerun this script."
     }
 }
 
@@ -198,6 +209,7 @@ if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
 # .env file
 # ==============================================================================
 Write-Step ".env configuration"
+
 $envFile    = Join-Path $ROOT "compose\.env"
 $envExample = Join-Path $ROOT "compose\.env.example"
 if (Test-Path $envFile) {
@@ -205,31 +217,29 @@ if (Test-Path $envFile) {
 } elseif (Test-Path $envExample) {
     Copy-Item $envExample $envFile
     Write-OK "Copied compose\.env.example -> compose\.env"
-    Write-Warn "Open compose\.env and fill in your Snowflake credentials!"
+    Write-Warn "Open compose\.env and fill in your Snowflake + Airbyte credentials!"
 } else {
     Write-Warn "compose\.env.example not found - skipping"
 }
 
 # ==============================================================================
-# abctl  (Airbyte local CLI — downloads binary from GitHub releases)
+# abctl  (Airbyte CLI - manages Airbyte OSS via a local k3d cluster)
 # ==============================================================================
-Write-Step "abctl  (Airbyte local CLI)"
+Write-Step "abctl  (Airbyte CLI)"
 
 $abctlBin = "$env:USERPROFILE\.abctl\bin"
 if ((Test-Path $abctlBin) -and ($env:PATH -notlike "*$abctlBin*")) { $env:PATH = "$abctlBin;$env:PATH" }
 
 if (-not (Get-Command abctl -ErrorAction SilentlyContinue)) {
     if (Ask-YN "abctl not found. Download and install it?") {
-        # Detect processor architecture
         $cpuArch = [System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture
         $arch = if ($cpuArch -eq [System.Runtime.InteropServices.Architecture]::Arm64) { "arm64" } else { "amd64" }
         Write-Info "Architecture: $arch"
 
-        # Fetch latest release tag from GitHub API
         Write-Info "Fetching latest abctl release from GitHub..."
-        $release  = Invoke-RestMethod "https://api.github.com/repos/airbytehq/abctl/releases/latest" -UseBasicParsing
-        $version  = $release.tag_name   # e.g. v0.30.4
-        $url      = "https://github.com/airbytehq/abctl/releases/download/$version/abctl-$version-windows-$arch.zip"
+        $release = Invoke-RestMethod "https://api.github.com/repos/airbytehq/abctl/releases/latest" -UseBasicParsing
+        $version = $release.tag_name
+        $url     = "https://github.com/airbytehq/abctl/releases/download/$version/abctl-$version-windows-$arch.zip"
         Write-Info "Downloading abctl $version ($arch)..."
 
         $zipPath = "$env:TEMP\abctl-$version.zip"
@@ -241,7 +251,6 @@ if (-not (Get-Command abctl -ErrorAction SilentlyContinue)) {
         Expand-Archive -Path $zipPath -DestinationPath $extractTemp -Force
         Remove-Item $zipPath
 
-        # The zip expands into a versioned subfolder — move abctl.exe up to bin root
         $exeSource = Get-ChildItem -Path $extractTemp -Filter "abctl.exe" -Recurse | Select-Object -First 1
         if ($exeSource) {
             Move-Item -Path $exeSource.FullName -Destination "$abctlBin\abctl.exe" -Force
@@ -250,7 +259,6 @@ if (-not (Get-Command abctl -ErrorAction SilentlyContinue)) {
         }
         Remove-Item -Recurse -Force $extractTemp
 
-        # Persist to user PATH so it survives terminal restarts
         $currentUserPath = [System.Environment]::GetEnvironmentVariable("PATH", "User")
         if ($currentUserPath -notlike "*$abctlBin*") {
             [System.Environment]::SetEnvironmentVariable("PATH", "$abctlBin;$currentUserPath", "User")
@@ -267,7 +275,26 @@ if (-not (Get-Command abctl -ErrorAction SilentlyContinue)) {
         Write-Warn "abctl skipped. Download manually: https://github.com/airbytehq/abctl/releases/latest"
     }
 } else {
-    Write-OK "abctl $(abctl version 2>&1 | Select-Object -First 1)"
+    $abctlVer = abctl version 2>&1 | Select-Object -First 1
+    Write-OK "abctl $abctlVer"
+}
+
+# Install Airbyte (idempotent -- safe to run again; skips if already running)
+if (Get-Command abctl -ErrorAction SilentlyContinue) {
+    $running = docker ps --format "{{.Names}}" 2>$null | Select-String "airbyte-abctl-control-plane"
+    if ($running) {
+        Write-OK "Airbyte already installed (container running)"
+    } else {
+        if (Ask-YN "Airbyte not yet installed. Run 'abctl local install' now? (takes ~5 min first time)") {
+            abctl local install
+            Write-OK "Airbyte installed"
+            Write-Info "Get Airbyte credentials: abctl local credentials"
+            Write-Info "Copy client-id and client-secret into compose\.env"
+        } else {
+            Write-Info "Skipped. Install later: abctl local install"
+            Write-Info "Then get credentials:   abctl local credentials"
+        }
+    }
 }
 
 # ==============================================================================
@@ -279,12 +306,13 @@ Write-Host "  Environment bootstrap complete!" -ForegroundColor Cyan
 Write-Host "==================================================" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "Next steps (from repo root):" -ForegroundColor White
-Write-Host "  1. Edit compose\.env with your Snowflake credentials"
-Write-Host "  2. Start Airflow:  docker compose -f compose/docker-compose.yml up -d --build"
-Write-Host "  3. Start Airbyte:  abctl local install          (first run ~20 min)"
-Write-Host "     Get creds:      abctl local credentials"
-Write-Host "  4. Init Snowflake: python platform/scripts/init_snowflake.py"
-Write-Host "  5. Health check:   python platform/scripts/health_check.py"
+Write-Host "  1. Get Airbyte credentials: abctl local credentials"
+Write-Host "  2. Edit compose\.env with your Snowflake + Airbyte credentials"
+Write-Host "  3. Init Snowflake:          python sgdp\scripts\init_snowflake.py"
+Write-Host "  4. Start stack:             .\compose\start.bat"
+Write-Host "  5. Health check:            python sgdp\scripts\health_check.py"
 Write-Host ""
-Write-Host "  Airflow UI -> http://localhost:8080  (admin / admin)"
 Write-Host "  Airbyte UI -> http://localhost:8000  (run 'abctl local credentials' for password)"
+Write-Host "  Airflow UI -> http://localhost:8080  (admin / admin)"
+Write-Host ""
+Write-Host "  See STARTUP.md for full documentation."

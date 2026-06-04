@@ -157,39 +157,217 @@ def add_source(name: str, airbyte_connection_id: str, schedule: str, owner: str)
         syncer.set_connection_namespace(airbyte_connection_id, name)
         print_success(f"Namespace set → GENERIC_AIRBYTE_LANDING.{name}")
 
-        # Create source_metadata.yml stub
+        # Discover schema from Airbyte source connector (no sync required)
+        print_info("Discovering schema from source connector...")
+        stream_catalog = syncer.get_stream_catalog(airbyte_connection_id)
+
         sources_dir = Path("sources") / name
         sources_dir.mkdir(parents=True, exist_ok=True)
-
         metadata_path = sources_dir / "source_metadata.yml"
 
-        # Fetch stream names from Airbyte to populate stub
-        print_info("Fetching schema from Airbyte...")
-        diff_report = syncer.sync_source(name)
+        # If discovery returned nothing, fall back to stream names from configured catalog
+        if not stream_catalog:
+            print_warn("Schema discovery returned no column info — fetching stream names only.")
+            diff_report = syncer.sync_source(name)
+            stream_catalog = {t: {"columns": {}, "source_pk": [], "sync_modes": []} for t in diff_report.get("all_tables", [])}
 
-        # Create stub with discovered tables
-        stub = {
-            name: {
-                table: {
-                    "primary_key": ["id"],  # Default guess
-                    "load_strategy": "incremental",
-                    "business_owner": owner or f"{name}-team",
-                    "description": f"Table: {table}",
-                }
-                for table in diff_report.get("all_tables", [])
+        # Build source_metadata.yml
+        # Use source-defined primary key when available; fall back to "id"
+        source_meta: dict = {}
+        for table, info in stream_catalog.items():
+            col_names = sorted(info["columns"].keys())
+            suggested_pk = info["source_pk"] or ["id"]
+            entry: dict = {
+                "primary_key": suggested_pk,
+                "load_strategy": "incremental",
+                "business_owner": owner or f"{name}-team",
+                "description": f"Table: {table}",
             }
-        }
+            if col_names:
+                entry["_columns"] = col_names
+            source_meta[table] = entry
 
         with open(metadata_path, "w") as f:
-            yaml.dump(stub, f, default_flow_style=False, sort_keys=False)
+            yaml.dump({name: source_meta}, f, default_flow_style=False, sort_keys=False)
 
         print_success(f"Created {metadata_path}")
-        print_warn("⚠️  Review and confirm primary_keys in the file!")
-        print_info(f"Then run: platform sync {name}")
+
+        # Write source_schema.yml with full type info
+        table_schema = {t: info["columns"] for t, info in stream_catalog.items()}
+        source_pk_map = {t: info["source_pk"] for t, info in stream_catalog.items()}
+        _write_source_schema(name, table_schema, source_pk_map, sources_dir)
+        print_success(f"Created sources/{name}/source_schema.yml")
+
+        # ── Try to populate columns immediately from Snowflake landing zone ──
+        # If this source was synced before (even under a previous name or before a prune),
+        # GENERIC_AIRBYTE_LANDING.<name> already has the tables and columns — grab them now.
+        print_info("Checking Snowflake landing zone for existing column data...")
+        try:
+            _populate_columns_from_landing(name, syncer)
+            # Reload stream_catalog column info from what was just written so the summary is accurate
+            with open(metadata_path) as f:
+                written_meta = yaml.safe_load(f) or {}
+            for table, entry in written_meta.get(name, {}).items():
+                if table in stream_catalog:
+                    cols = entry.get("_columns", [])
+                    stream_catalog[table]["columns"] = {c: {} for c in cols}
+        except Exception:
+            pass  # landing zone empty — columns will appear after trigger-sync
+
+        # ── Print final state ─────────────────────────────────────────────────
+        has_columns = any(info["columns"] for info in stream_catalog.values())
+        has_pk = any(info["source_pk"] for info in stream_catalog.values())
+
+        print_header("Source schema")
+        max_tbl = max((len(t) for t in stream_catalog), default=10)
+        for table, info in sorted(stream_catalog.items()):
+            col_names = sorted(info["columns"].keys())
+            pk = info["source_pk"]
+            pk_str = f"pk={','.join(pk)}" if pk else "pk=?"
+            col_str = ", ".join(col_names) if col_names else "(run trigger-sync to discover columns)"
+            click.echo(f"  {table:<{max_tbl}}  [{pk_str}]  {col_str}")
+        click.echo("")
+
+        if has_columns:
+            print_success("Columns populated from existing landing zone data.")
+            print_info(f"Step 1: review sources/{name}/source_metadata.yml  (confirm primary_key)")
+            print_info(f"Step 2: platform sync {name} --generate-models --run-dbt")
+        else:
+            print_warn("Landing zone empty — columns will be populated after the first Airbyte sync.")
+            if not has_pk:
+                print_warn("primary_key defaulted to [id] — update source_metadata.yml before generating models.")
+            print_info(f"Step 1: platform trigger-sync {name}        (runs Airbyte, populates columns)")
+            print_info(f"Step 2: review sources/{name}/source_metadata.yml  (confirm primary_key)")
+            print_info(f"Step 3: platform sync {name} --generate-models --run-dbt")
 
     except Exception as e:
         print_error(f"Failed to add source: {e}")
         sys.exit(1)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Helpers: source_schema.yml writer + column population
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def _write_source_schema(
+    source_name: str,
+    table_schema: dict,   # {table: {col: {type, nullable}}}
+    source_pk_map: dict,  # {table: [pk_col, ...]}  — empty dict is fine
+    sources_dir: Path,
+) -> None:
+    """
+    Write (or overwrite) source_schema.yml — the auto-generated column reference.
+    Never edited by hand; safe to delete and regenerate at any time.
+
+    Format:
+      <source_name>:
+        <table>:
+          source_defined_primary_key: [...]
+          columns:
+            <col>: {type: ..., nullable: ...}
+    """
+    schema: dict = {source_name: {}}
+    for table_name, columns in sorted(table_schema.items()):
+        schema[source_name][table_name] = {
+            "source_defined_primary_key": source_pk_map.get(table_name, []),
+            "columns": {
+                col: {"type": info.get("type", "string"), "nullable": info.get("nullable", True)}
+                for col, info in sorted(columns.items())
+            },
+        }
+
+    schema_path = sources_dir / "source_schema.yml"
+    with open(schema_path, "w") as f:
+        yaml.dump(schema, f, default_flow_style=False, sort_keys=False)
+
+
+def _refresh_source_schema_from_registry(source_name: str, sources_dir: Path) -> None:
+    """
+    Re-write source_schema.yml using whatever column data the registry already holds.
+    Called after trigger-sync (Snowflake types) or regen so the file stays current.
+    """
+    registry = SchemaRegistry()
+    table_rows = registry.get_tables_for_source(source_name)
+    if not table_rows:
+        return
+
+    table_schema: dict = {}
+    for row in table_rows:
+        raw = row.get("columns", {})
+        cols = json.loads(raw) if isinstance(raw, str) else (raw or {})
+        table_schema[row["table_name"]] = cols
+
+    _write_source_schema(source_name, table_schema, {}, sources_dir)
+
+
+def _populate_columns_from_landing(source_name: str, syncer: "CatalogSyncer") -> None:
+    """
+    After an Airbyte sync, reads column schemas from GENERIC_AIRBYTE_LANDING and
+    writes them into source_metadata.yml as a `_columns:` list under each table.
+
+    This lets the user see all real column names before editing primary_key and
+    running dbt. The leading underscore signals "auto-generated — do not hand-edit";
+    generators ignore this key.
+    """
+    print_info("Reading column schemas from Snowflake landing zone...")
+    diff = syncer.sync_from_landing(source_name)
+
+    if not diff["all_tables"]:
+        print_warn("No tables found in landing zone — nothing to update.")
+        return
+
+    # Pull full column detail from registry (sync_from_landing already wrote them there)
+    registry = SchemaRegistry()
+    table_rows = registry.get_tables_for_source(source_name)
+
+    # Build {table_name: [col, ...]} sorted alphabetically
+    col_map: dict[str, list[str]] = {}
+    for row in table_rows:
+        raw = row.get("columns", {})
+        cols = json.loads(raw) if isinstance(raw, str) else (raw or {})
+        col_map[row["table_name"]] = sorted(cols.keys())
+
+    # Update source_metadata.yml
+    metadata_path = Path("sources") / source_name / "source_metadata.yml"
+    if not metadata_path.exists():
+        print_warn(f"{metadata_path} not found — run platform add-source first.")
+        return
+
+    with open(metadata_path) as f:
+        metadata = yaml.safe_load(f) or {}
+
+    source_meta = metadata.setdefault(source_name, {})
+    for table_name, col_names in col_map.items():
+        if table_name not in source_meta:
+            # New table discovered after initial add-source
+            source_meta[table_name] = {
+                "primary_key": ["id"],
+                "load_strategy": "incremental",
+                "business_owner": f"{source_name}-team",
+                "description": f"Table: {table_name}",
+            }
+        source_meta[table_name]["_columns"] = col_names
+
+    with open(metadata_path, "w") as f:
+        yaml.dump(metadata, f, default_flow_style=False, sort_keys=False)
+
+    print_success(f"Updated {metadata_path} with discovered columns")
+
+    # Refresh source_schema.yml with the accurate Snowflake types from landing
+    sources_dir = Path("sources") / source_name
+    _refresh_source_schema_from_registry(source_name, sources_dir)
+    print_success(f"Updated sources/{source_name}/source_schema.yml with Snowflake types")
+
+    # Print a readable column summary
+    print_header("Discovered columns per table")
+    max_name = max((len(t) for t in col_map), default=10)
+    for table_name, col_names in sorted(col_map.items()):
+        click.echo(f"  {table_name:<{max_name}}  {', '.join(col_names)}")
+
+    click.echo("")
+    print_warn("Set primary_key for each table in source_metadata.yml, then run:")
+    print_info(f"  platform sync {source_name} --generate-models --run-dbt")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -224,7 +402,8 @@ def trigger_sync(source_name: str, no_wait: bool):
         syncer.trigger_sync(conn_id, wait=not no_wait)
 
         if not no_wait:
-            print_success("Airbyte sync complete — run: platform sync fakedata --generate-models --run-dbt")
+            print_success("Airbyte sync complete")
+            _populate_columns_from_landing(source_name, syncer)
 
     except Exception as e:
         print_error(f"Trigger failed: {e}")
@@ -407,6 +586,12 @@ def regen(source_name: str, layer: str):
             files = gen.generate_source(source_name)
             print_success(f"Generated {len(files)} silver files")
 
+        # Refresh source_schema.yml so types stay current with the registry
+        sources_dir = Path("sources") / source_name
+        if sources_dir.exists():
+            _refresh_source_schema_from_registry(source_name, sources_dir)
+            print_success(f"Refreshed sources/{source_name}/source_schema.yml")
+
         print_success("Regeneration complete!")
 
     except Exception as e:
@@ -549,6 +734,109 @@ def docs():
     except Exception as e:
         print_error(f"Docs command failed: {e}")
         sys.exit(1)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Command: prune
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+@cli.command()
+@click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompt")
+@click.option("--dry-run", is_flag=True, help="Show what would be deleted without deleting anything")
+def prune(yes: bool, dry_run: bool):
+    """
+    Reset the local platform to a clean slate.
+
+    Removes all generated artefacts so you can start fresh with new sources:
+      - sources/<name>/           source_metadata.yml, source_schema.yml
+      - dbt_project/models/bronze/<name>/
+      - dbt_project/models/silver/<name>/
+      - dbt_project/target/       compiled SQL, manifest, run results
+      - airflow/logs/             scheduler and DAG logs
+
+    Examples:
+      platform prune
+      platform prune --yes
+      platform prune --dry-run
+    """
+    import shutil
+
+    root = PROJECT_ROOT
+
+    # ── Collect what will be removed ─────────────────────────────────────────
+    targets: list[tuple[str, Path]] = []
+
+    sources_root = root / "sources"
+    for child in sorted(sources_root.iterdir()):
+        if child.is_dir():
+            targets.append(("source dir", child))
+
+    bronze_root = root / "dbt_project" / "models" / "bronze"
+    for child in sorted(bronze_root.iterdir()):
+        if child.is_dir():
+            targets.append(("bronze models", child))
+
+    silver_root = root / "dbt_project" / "models" / "silver"
+    for child in sorted(silver_root.iterdir()):
+        if child.is_dir():
+            targets.append(("silver models", child))
+
+    dbt_target = root / "dbt_project" / "target"
+    if dbt_target.exists():
+        targets.append(("dbt target", dbt_target))
+
+    airflow_logs = root / "airflow" / "logs"
+    if airflow_logs.exists():
+        for child in sorted(airflow_logs.iterdir()):
+            targets.append(("airflow logs", child))
+
+    # ── Print preview ─────────────────────────────────────────────────────────
+    if not targets:
+        print_info("Nothing to prune — platform is already clean.")
+        return
+
+    print_header("Will remove")
+    for label, path in targets:
+        rel = path.relative_to(root)
+        click.echo(f"  [{label:<14}]  {rel}{'/' if path.is_dir() else ''}")
+
+    if dry_run:
+        click.echo("")
+        print_info("Dry run — nothing deleted.")
+        return
+
+    # ── Confirm ───────────────────────────────────────────────────────────────
+    click.echo("")
+    if not yes:
+        click.confirm("  This cannot be undone. Proceed?", default=False, abort=True)
+
+    # ── Delete ────────────────────────────────────────────────────────────────
+    print_header("Pruning")
+    deleted_dirs = deleted_files = 0
+
+    for _, path in targets:
+        if not path.exists():
+            continue
+        try:
+            if path.is_dir():
+                shutil.rmtree(path, ignore_errors=True)
+                deleted_dirs += 1
+            else:
+                path.unlink(missing_ok=True)
+                deleted_files += 1
+        except Exception as e:
+            print_warn(f"Could not remove {path.relative_to(root)}: {e}")
+
+    # Re-create empty directories and restore .gitkeep so the structure stays in git
+    for directory in [sources_root, bronze_root, silver_root]:
+        directory.mkdir(parents=True, exist_ok=True)
+        gitkeep = directory / ".gitkeep"
+        if not gitkeep.exists():
+            gitkeep.touch()
+
+    print_success(f"Removed {deleted_dirs} directories and {deleted_files} files")
+    print_info("Re-add sources with: platform add-source --name <name> --airbyte-connection-id <id>")
 
 
 # ──────────────────────────────────────────────────────────────────────────────

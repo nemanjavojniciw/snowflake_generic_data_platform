@@ -1,0 +1,54 @@
+fakedatasource:
+  products:
+    primary_key:
+    - id
+    load_strategy: incremental
+    business_owner: fakedatasource-team
+    description: 'Table: products'
+    _columns:
+    - created_at
+    - id
+    - make
+    - model
+    - price
+    - updated_at
+    - year
+  users:
+    primary_key:
+    - id
+    load_strategy: incremental
+    business_owner: fakedatasource-team
+    description: 'Table: users'
+    _columns:
+    - academic_degree
+    - address
+    - age
+    - blood_type
+    - created_at
+    - email
+    - gender
+    - height
+    - id
+    - language
+    - name
+    - nationality
+    - occupation
+    - telephone
+    - title
+    - updated_at
+    - weight
+  purchases:
+    primary_key:
+    - id
+    load_strategy: incremental
+    business_owner: fakedatasource-team
+    description: 'Table: purchases'
+    _columns:
+    - added_to_cart_at
+    - created_at
+    - id
+    - product_id
+    - purchased_at
+    - returned_at
+    - updated_at
+    - user_id

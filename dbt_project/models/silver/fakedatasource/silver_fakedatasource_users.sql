@@ -1,6 +1,6 @@
 -- GENERATED FILE — DO NOT EDIT MANUALLY
--- source: fakedata | table: products | strategy: incremental
--- generated_at: 2026-06-03T14:02:26.666519Z
+-- source: fakedatasource | table: users | strategy: incremental
+-- generated_at: 2026-06-04T12:27:55.026191Z
 
 {{
     config(
@@ -8,12 +8,12 @@
         unique_key='id',
         on_schema_change='sync_all_columns',
         incremental_strategy='merge',
-        tags=['silver', 'generated', 'fakedata']
+        tags=['silver', 'generated', 'fakedatasource']
     )
 }}
 
 with bronze as (
-    select * from {{ ref('bronze_fakedata_products') }}
+    select * from {{ ref('bronze_fakedatasource_users') }}
 
     {% if is_incremental() %}
     where _extracted_at > (select coalesce(max(_extracted_at), '1900-01-01'::timestamp_ntz) from {{ this }})
@@ -22,13 +22,23 @@ with bronze as (
 
 deduped as (
     select
+        academic_degree,
+        address,
+        age,
+        blood_type,
         created_at,
+        email,
+        gender,
+        height,
         id,
-        make,
-        model,
-        price,
+        language,
+        name,
+        nationality,
+        occupation,
+        telephone,
+        title,
         updated_at,
-        year,
+        weight,
         _raw_id,
         _extracted_at,
         _loaded_at,
@@ -42,13 +52,23 @@ deduped as (
 
 silver as (
     select
+        academic_degree,
+        address,
+        age,
+        blood_type,
         created_at,
+        email,
+        gender,
+        height,
         id,
-        make,
-        model,
-        price,
+        language,
+        name,
+        nationality,
+        occupation,
+        telephone,
+        title,
         updated_at,
-        year,
+        weight,
         _raw_id,
         _extracted_at,
         _loaded_at,

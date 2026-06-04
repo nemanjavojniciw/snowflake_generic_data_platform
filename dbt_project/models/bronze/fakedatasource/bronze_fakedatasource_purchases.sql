@@ -1,8 +1,8 @@
 -- GENERATED FILE — DO NOT EDIT MANUALLY
--- source: fakedata | table: purchases
--- generated_at: 2026-06-03T14:02:25.192481Z | schema_hash: 190b226d5a368a0c4b876a19fe8f954c
+-- source: fakedatasource | table: purchases
+-- generated_at: 2026-06-04T12:27:53.481224Z | schema_hash: 190b226d5a368a0c4b876a19fe8f954c
 
-{{ config(tags=['bronze', 'generated', 'fakedata']) }}
+{{ config(tags=['bronze', 'generated', 'fakedatasource']) }}
 
 with source as (
     select * from GENERIC_AIRBYTE_LANDING.GENERIC_AIRBYTE_LANDING.purchases

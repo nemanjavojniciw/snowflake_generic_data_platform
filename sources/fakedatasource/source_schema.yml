@@ -1,0 +1,106 @@
+fakedatasource:
+  products:
+    source_defined_primary_key: []
+    columns:
+      created_at:
+        type: timestamp_tz
+        nullable: true
+      id:
+        type: number
+        nullable: true
+      make:
+        type: text
+        nullable: true
+      model:
+        type: text
+        nullable: true
+      price:
+        type: float
+        nullable: true
+      updated_at:
+        type: timestamp_tz
+        nullable: true
+      year:
+        type: number
+        nullable: true
+  purchases:
+    source_defined_primary_key: []
+    columns:
+      added_to_cart_at:
+        type: timestamp_tz
+        nullable: true
+      created_at:
+        type: timestamp_tz
+        nullable: true
+      id:
+        type: number
+        nullable: true
+      product_id:
+        type: number
+        nullable: true
+      purchased_at:
+        type: timestamp_tz
+        nullable: true
+      returned_at:
+        type: timestamp_tz
+        nullable: true
+      updated_at:
+        type: timestamp_tz
+        nullable: true
+      user_id:
+        type: number
+        nullable: true
+  users:
+    source_defined_primary_key: []
+    columns:
+      academic_degree:
+        type: text
+        nullable: true
+      address:
+        type: object
+        nullable: true
+      age:
+        type: number
+        nullable: true
+      blood_type:
+        type: text
+        nullable: true
+      created_at:
+        type: timestamp_tz
+        nullable: true
+      email:
+        type: text
+        nullable: true
+      gender:
+        type: text
+        nullable: true
+      height:
+        type: text
+        nullable: true
+      id:
+        type: number
+        nullable: true
+      language:
+        type: text
+        nullable: true
+      name:
+        type: text
+        nullable: true
+      nationality:
+        type: text
+        nullable: true
+      occupation:
+        type: text
+        nullable: true
+      telephone:
+        type: text
+        nullable: true
+      title:
+        type: text
+        nullable: true
+      updated_at:
+        type: timestamp_tz
+        nullable: true
+      weight:
+        type: number
+        nullable: true
