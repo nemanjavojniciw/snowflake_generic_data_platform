@@ -1,6 +1,6 @@
 # Snowflake Generic Data Platform — Project Specification
 
-> **Version:** 0.1 — Draft  
+> **Version:** 0.2 — Implemented & Tested  
 > **Goal:** A self-managing, code-generating data engineering platform that automatically produces bronze/silver dbt layers for any connected source, with zero hand-written transformation code.
 
 ---
@@ -37,9 +37,9 @@ All services in this stack have local/self-hosted versions that are functionally
 
 | Service | Local Version | Cloud Version | Config Difference |
 |---|---|---|---|
-| Airbyte | Docker Compose (OSS) | Airbyte Cloud | API base URL only |
-| Airflow | Astro CLI (local) or Docker Compose | Astronomer Cloud / MWAA | Connection strings only |
-| dbt | dbt Core (pip) | dbt Cloud | Job trigger method |
+| Airbyte | `abctl` (local Kubernetes inside Docker) | Airbyte Cloud | API base URL + auth only |
+| Airflow | Docker Compose | Astronomer Cloud / MWAA | Connection strings only |
+| dbt | dbt Core (inside Airflow container) | dbt Cloud | Job trigger method |
 | Git | Local repo | GitHub / GitLab | Remote URL only |
 | Observability | Elementary (local) | Elementary Cloud | Report destination |
 | Snowflake | **No local equivalent** | Snowflake Cloud | N/A — use cloud |
@@ -60,20 +60,20 @@ The hardest migration is **Airflow** if you move from Docker Compose to Astronom
 
 | Layer | Tool | Version | Purpose |
 |---|---|---|---|
-| Extract & Load | **Airbyte OSS** | Latest stable | Connect any source, load raw data to Snowflake |
+| Extract & Load | **Airbyte OSS** (`abctl`) | Latest stable | Connect any source, load raw data to Snowflake |
 | Data Warehouse | **Snowflake** | Standard edition | All data layers: RAW, BRONZE, SILVER, PLATFORM |
-| Transformations | **dbt Core** | 1.8+ | Execute generated SQL models, run tests |
-| Orchestration | **Apache Airflow** | 2.9+ (via Astro CLI) | Dynamic DAGs, pipeline scheduling |
-| Code Generation | **Python 3.11+** | — | Schema Registry syncer, model generators |
+| Transformations | **dbt Core** | 1.11 | Execute generated SQL models, run tests (inside Airflow container) |
+| Orchestration | **Apache Airflow** | 2.10 (Docker Compose) | Dynamic DAGs, pipeline scheduling |
+| Code Generation | **Python 3.11** (`sgdp` package) | — | Schema Registry syncer, model generators |
 | Version Control | **Git + GitHub** | — | Generated model storage and audit trail |
 | Data Quality | **Elementary** | Latest | dbt-native observability and alerting |
+| Package Manager | **uv** | Latest | Manages Python 3.11 venv and dependencies |
 
 ### Supporting Libraries
 
 | Library | Purpose |
 |---|---|
 | `apache-airflow-providers-airbyte` | Trigger Airbyte syncs as Airflow tasks |
-| `astronomer-cosmos` | Parse dbt DAG into native Airflow tasks |
 | `Jinja2` | Template engine for SQL model generation |
 | `PyYAML` | Parse source_metadata.yml |
 | `snowflake-connector-python` | Read/write schema registry from Python |
@@ -81,17 +81,20 @@ The hardest migration is **Airflow** if you move from Docker Compose to Astronom
 | `dbt-snowflake` | dbt adapter for Snowflake |
 | `dbt-utils` | Macro library: dedup, surrogate keys, tests |
 | `dbt-expectations` | Extended test library for generated test coverage |
+| `dbt-date` | Date utility macros |
 | `elementary-data` | Data observability package |
 
 ### Local Infrastructure
 
-Everything except Snowflake runs via **Docker Compose**. One `docker-compose.yml` at the repo root brings up the full local stack.
+Airflow runs via **Docker Compose** (`compose/docker-compose.yml`). Airbyte runs via `abctl` (local Kubernetes cluster inside Docker).
 
 ```
-docker-compose up
-  ├── airbyte (webapp + server + worker + db)
-  ├── airflow (scheduler + webserver + triggerer + postgres)
-  └── platform-services (catalog-syncer, model-generator — Python services)
+abctl local install          → Airbyte (UI at :8000, Kubernetes-managed)
+docker compose -f compose/docker-compose.yml up
+  ├── airflow-webserver      (UI at :8080)
+  ├── airflow-scheduler
+  ├── airflow-triggerer
+  └── postgres               (Airflow metadata DB)
 ```
 
 ---
@@ -100,85 +103,97 @@ docker-compose up
 
 ### Prerequisites
 
-- Docker Desktop 4.x+
-- Python 3.11+
-- Node.js 18+ (optional, for dbt docs UI)
-- Astro CLI (`brew install astro` or equivalent)
-- A Snowflake account (trial is fine)
+Install these manually before running the bootstrap script.
 
-### Step-by-step bootstrap
+- **Docker Desktop** 4.x+ (8 GB+ RAM recommended)
+- **`uv`** — Python version + venv manager (downloads Python 3.11 automatically)
+  - Windows: `powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"`
+  - macOS/Linux: `curl -LsSf https://astral.sh/uv/install.sh | sh`
+- **`abctl`** — Airbyte CLI binary, add to PATH
+  - Windows: download from GitHub releases
+  - macOS: `brew install airbytehq/tap/abctl`
+  - Linux/WSL2: `curl -LsfS https://get.airbyte.com | bash -s`
+- **Git**
+- A **Snowflake account** (trial is fine)
 
-**1. Clone the platform repo and copy environment config**
+### First-Time Bootstrap
+
+Run the setup script once — it handles the venv, dependencies, and Airbyte installation.
 
 ```bash
-git clone <your-platform-repo>
-cd snowflake-data-platform
-cp .env.example .env
+# From repo root — Git Bash, WSL2, or macOS/Linux
+bash scripts/setup_env.sh
 ```
 
-**2. Fill in `.env` with your Snowflake credentials**
+The script will:
+1. Create `.venv` with Python 3.11 via `uv venv`
+2. Install `scripts/requirements.txt` via `uv pip install`
+3. Install the `platform` CLI via `uv pip install -e .`
+4. Copy `compose/.env.example` → `compose/.env` (if not present)
+5. Run `abctl local install` to deploy Airbyte (~5 min on first run)
 
+### After the Bootstrap Script
+
+**1. Get Airbyte API credentials:**
 ```bash
-# Snowflake
-SNOWFLAKE_ACCOUNT=your_account.region
-SNOWFLAKE_USER=platform_svc
-SNOWFLAKE_PASSWORD=your_password
+abctl local credentials
+# Copy client-id and client-secret
+```
+
+**2. Fill in `compose/.env`:**
+```bash
+SNOWFLAKE_ACCOUNT=<org>-<account>
+SNOWFLAKE_USER=PLATFORM_SVC
+SNOWFLAKE_PASSWORD=<your-password>
 SNOWFLAKE_ROLE=PLATFORM_ADMIN
 SNOWFLAKE_WAREHOUSE=PLATFORM_WH
+SNOWFLAKE_DATABASE=GENERIC_PLATFORM
 
-# Airbyte (local)
-AIRBYTE_API_URL=http://localhost:8000/api/v1
-AIRBYTE_USERNAME=airbyte
-AIRBYTE_PASSWORD=password
-
-# Git (for model commits)
-GIT_REPO_URL=https://github.com/yourorg/your-dbt-repo
-GIT_TOKEN=ghp_...
-GIT_BRANCH=main
+AIRBYTE_CLIENT_ID=<from abctl local credentials>
+AIRBYTE_CLIENT_SECRET=<from abctl local credentials>
 ```
 
-**3. Start Airbyte locally**
-
+**3. Activate the venv:**
 ```bash
-git clone https://github.com/airbytehq/airbyte.git local/airbyte
-cd local/airbyte
-./run-ab-platform.sh
-# Accessible at http://localhost:8000
+source .venv/bin/activate        # macOS/Linux/WSL2
+.venv\Scripts\activate           # Windows PowerShell
 ```
 
-**4. Start Airflow locally via Astro CLI**
-
+**4. Initialize Snowflake** (creates databases, schemas, RBAC):
 ```bash
-cd airflow/
-astro dev start
-# Accessible at http://localhost:8080
-# Default: admin / admin
+python sgdp/scripts/init_snowflake.py
 ```
 
-**5. Install dbt and platform Python dependencies**
-
+**5. Start Airflow:**
 ```bash
-pip install -r requirements.txt
-cd dbt_project/
-dbt deps
-dbt debug  # verify Snowflake connection
+docker compose -f compose/docker-compose.yml up -d
+# Wait ~60 seconds, then open http://localhost:8080
 ```
 
-**6. Initialize the Snowflake schema structure**
-
+**6. Verify the full local stack:**
 ```bash
-python platform/scripts/init_snowflake.py
-# Creates: RAW, BRONZE, SILVER, PLATFORM databases
-# Creates: schema_registry table, source_catalog table
-# Creates: warehouses, roles, grants
-```
-
-**7. Verify the full local stack**
-
-```bash
-python platform/scripts/health_check.py
+python sgdp/scripts/health_check.py
 # Checks: Airbyte API, Snowflake connection, Airflow API, dbt connection
 ```
+
+### Daily Startup / Shutdown
+
+```powershell
+# Windows
+.\compose\start.bat     # start Airbyte + Airflow
+.\compose\stop.bat      # stop Airflow, leave Airbyte running
+
+# macOS/Linux/WSL2
+make -C compose up
+make -C compose down
+```
+
+### Service URLs
+
+| Service | URL | Credentials |
+|---------|-----|-------------|
+| Airbyte UI | http://localhost:8000 | `abctl local credentials` |
+| Airflow UI | http://localhost:8080 | admin / admin (from `.env`) |
 
 ---
 
@@ -192,15 +207,15 @@ python platform/scripts/health_check.py
                            │ Airbyte connector
                            ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                    AIRBYTE (Extract & Load)                      │
+│                    AIRBYTE (Extract & Load)                     │
 │  - Reads source data                                            │
 │  - Writes raw JSON + extracted columns to Snowflake RAW         │
-│  - Exposes connection catalog via Config API                     │
+│  - Exposes connection catalog via Config API                    │
 └──────────────────────────┬──────────────────────────────────────┘
                            │ raw tables
                            ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                   SNOWFLAKE RAW DATABASE                         │
+│                   SNOWFLAKE RAW DATABASE                        │
 │  raw.<source_name>.<table_name>                                 │
 │  Contains: _airbyte_raw_id, _airbyte_extracted_at, all columns  │
 └──────────────────────────┬──────────────────────────────────────┘
@@ -214,12 +229,12 @@ python platform/scripts/health_check.py
                            │ generated .sql files → git
                            ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                    dbt TRANSFORMATION LAYER                      │
+│                    dbt TRANSFORMATION LAYER                     │
 │                                                                 │
 │  BRONZE: models/bronze/<source>/<table>.sql                     │
 │    - Thin select from RAW                                       │
 │    - Add _loaded_at, _raw_id metadata                           │
-│    - Rename/cast columns to standard types                       │
+│    - Rename/cast columns to standard types                      │
 │                                                                 │
 │  SILVER: models/silver/<source>/<table>.sql                     │
 │    - Deduplication (using _raw_id + _extracted_at)              │
@@ -230,7 +245,7 @@ python platform/scripts/health_check.py
                            │
                            ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                 PLATFORM CONTROL PLANE                           │
+│                 PLATFORM CONTROL PLANE                          │
 │                                                                 │
 │  Schema Registry   ←→   Catalog Syncer (Airbyte API poll)       │
 │  Change Detector   →    Evolution Handler (auto re-gen)         │
@@ -337,10 +352,10 @@ Each table contains:
 The Catalog Syncer polls the **Airbyte Config API** and populates the Schema Registry. This runs as an Airflow task before every source sync.
 
 ```python
-# platform/catalog_syncer.py (simplified)
+# sgdp/catalog_syncer.py (simplified)
 
 import requests
-from platform.registry import upsert_schema_registry
+from sgdp.registry import upsert_schema_registry
 
 def sync_catalog():
     connections = requests.get(
@@ -381,7 +396,7 @@ The Schema Registry is the platform's single source of truth. Every downstream c
 ### Registry Operations
 
 ```python
-# platform/registry.py
+# sgdp/registry.py
 
 def get_active_sources() -> list[dict]:
     """Returns all active sources with their latest schema."""
@@ -462,11 +477,11 @@ select * from bronze
 ### Generator Implementation
 
 ```python
-# platform/generators/bronze_generator.py
+# sgdp/generators/bronze_generator.py
 
 from jinja2 import Environment, FileSystemLoader
-from platform.registry import get_tables_for_source
-from platform.git_client import commit_generated_file
+from sgdp.registry import get_tables_for_source
+from sgdp.git_client import commit_generated_file
 
 BRONZE_TEMPLATE = "templates/bronze_model.sql.j2"
 
@@ -478,7 +493,7 @@ def generate_bronze_models(source_name: str) -> list[str]:
     tables = get_tables_for_source(source_name)
     generated_files = []
 
-    env = Environment(loader=FileSystemLoader("platform/templates"))
+    env = Environment(loader=FileSystemLoader("sgdp/templates"))
     template = env.get_template("bronze_model.sql.j2")
 
     for table in tables:
@@ -649,7 +664,7 @@ salesforce:
 ### Silver Generator Logic
 
 ```python
-# platform/generators/silver_generator.py
+# sgdp/generators/silver_generator.py
 
 STRATEGY_TEMPLATES = {
     "incremental": "templates/silver_incremental.sql.j2",
@@ -700,7 +715,7 @@ run_catalog_syncer          ← polls Airbyte API, updates Schema Registry
     ├── YES → generate_models → dbt_compile → commit_to_git
     └── NO  → skip
         │
-dbt_run (tag: <source_name>)    ← via astronomer-cosmos
+dbt_run (tag: <source_name>)    ← BashOperator inside Airflow container
         │
 dbt_test (tag: <source_name>)
         │
@@ -715,8 +730,7 @@ notify_owner (on failure or schema change)
 from airflow import DAG
 from airflow.decorators import task
 from airflow.providers.airbyte.operators.airbyte import AirbyteTriggerSyncOperator
-from cosmos import DbtTaskGroup, ProjectConfig, ProfileConfig
-from platform.registry import get_active_sources
+from sgdp.registry import get_active_sources
 
 def build_source_dag(source: dict) -> DAG:
     with DAG(
@@ -736,7 +750,7 @@ def build_source_dag(source: dict) -> DAG:
 
         @task
         def run_catalog_syncer(source_name):
-            from platform.catalog_syncer import sync_source
+            from sgdp.catalog_syncer import sync_source
             return sync_source(source_name)   # returns diff report
 
         @task.branch
@@ -747,18 +761,14 @@ def build_source_dag(source: dict) -> DAG:
 
         @task
         def generate_models(source_name):
-            from platform.generators import generate_all_models
+            from sgdp.generators import generate_all_models
             generate_all_models(source_name)
 
-        dbt_run = DbtTaskGroup(
-            group_id="run_dbt",
-            project_config=ProjectConfig(dbt_project_path="/opt/dbt"),
-            profile_config=ProfileConfig(...),
-            select=[f"tag:{source['source_name']}"],
-        )
+        # dbt runs via BashOperator inside the Airflow container
+        # (astronomer-cosmos is a future upgrade — currently shell-based)
 
-        sync >> run_catalog_syncer(source["source_name"]) >> check_schema_changed() >> [generate_models(source["source_name"]), dbt_run]
-        generate_models(source["source_name"]) >> dbt_run
+        sync >> run_catalog_syncer(source["source_name"]) >> check_schema_changed() >> [generate_models(source["source_name"]), "run_dbt"]
+        generate_models(source["source_name"]) >> "run_dbt"
 
     return dag
 
@@ -770,23 +780,19 @@ for source in get_active_sources():
 
 ### Airflow Connections (local setup)
 
-```bash
-# Set up Airbyte connection in Airflow
-astro dev run connections add airbyte_local \
-  --conn-type airbyte \
-  --host localhost \
-  --port 8000 \
-  --login airbyte \
-  --password password
+Connections are configured via environment variables in `compose/.env` or the Airflow UI at http://localhost:8080.
 
-# Set up Snowflake connection
-astro dev run connections add snowflake_default \
-  --conn-type snowflake \
-  --host <account>.snowflakecomputing.com \
-  --login platform_svc \
-  --password <password> \
-  --schema PLATFORM \
-  --extra '{"account": "<account>", "warehouse": "PLATFORM_WH", "role": "PLATFORM_ADMIN"}'
+```bash
+# Airbyte connection — set in compose/.env
+AIRBYTE_CLIENT_ID=<from abctl local credentials>
+AIRBYTE_CLIENT_SECRET=<from abctl local credentials>
+
+# Snowflake credentials — set in compose/.env
+SNOWFLAKE_ACCOUNT=<org>-<account>
+SNOWFLAKE_USER=PLATFORM_SVC
+SNOWFLAKE_PASSWORD=<password>
+SNOWFLAKE_ROLE=PLATFORM_ADMIN
+SNOWFLAKE_WAREHOUSE=PLATFORM_WH
 ```
 
 ---
@@ -808,7 +814,7 @@ When the Catalog Syncer detects a diff, it classifies every change:
 ### Evolution Handler
 
 ```python
-# platform/evolution_handler.py
+# sgdp/evolution_handler.py
 
 def handle_schema_changes(source_name: str, diff: dict):
 
@@ -929,13 +935,14 @@ platform sync salesforce --generate-models --run-dbt
 ### Platform CLI Commands
 
 ```bash
-platform add-source       # register a new source
-platform sync <source>    # manual trigger: airbyte + dbt
-platform status           # show all sources, last sync, health
-platform regen <source>   # force regenerate all models for a source
-platform deprecate <source> <table>   # soft-retire a table
-platform validate         # run dbt compile + test across all generated models
-platform docs             # serve dbt docs locally
+platform init                                          # init Snowflake schemas + RBAC
+platform add-source --name X --airbyte-connection-id Y # register a new source
+platform sync <source> --generate-models --run-dbt     # manual trigger: airbyte + dbt
+platform status                                        # show all sources, last sync, health
+platform regen <source>                                # force regenerate all models for source
+platform validate                                      # validate all source_metadata.yml files
+platform docs                                          # serve dbt docs at http://localhost:8001
+platform prune                                         # delete local generated data (Snowflake cleanup is manual)
 ```
 
 ---
@@ -966,23 +973,26 @@ Everything else — SQL, tests, sources.yml, DAG — is generated.
 ## 15. Repository Structure
 
 ```
-snowflake-data-platform/
+snowflake_generic_data_platform/
 │
-├── docker-compose.yml              # full local stack
-├── .env.example                    # environment variable template
-├── requirements.txt                # Python dependencies
+├── pyproject.toml                  # package definition: snowflake-generic-data-platform 0.1.0
+├── README.md
+├── STARTUP.md                      # startup + daily ops guide
+├── snowflake_platform_spec.md      # this document
 │
-├── platform/                       # platform services (Python)
+├── sgdp/                           # platform Python package (entry point: `platform` CLI)
+│   ├── __init__.py
+│   ├── cli.py                      # Click CLI: init, add-source, sync, status, regen, validate, docs, prune
 │   ├── catalog_syncer.py           # Airbyte API → Schema Registry
 │   ├── registry.py                 # Schema Registry read/write client
 │   ├── evolution_handler.py        # schema change classification + response
 │   ├── git_client.py               # commit generated files to git
 │   ├── generators/
 │   │   ├── bronze_generator.py
-│   │   ├── silver_generator.py
-│   │   └── sources_yml_generator.py
+│   │   └── silver_generator.py
 │   ├── templates/
 │   │   ├── bronze_model.sql.j2
+│   │   ├── bronze_schema.yml.j2
 │   │   ├── silver_incremental.sql.j2
 │   │   ├── silver_full_refresh.sql.j2
 │   │   ├── silver_scd2.sql.j2
@@ -991,29 +1001,46 @@ snowflake-data-platform/
 │       ├── init_snowflake.py       # one-time Snowflake setup
 │       └── health_check.py
 │
-├── airflow/                        # Astro CLI project
-│   ├── dags/
-│   │   └── platform_dag_factory.py # dynamic DAG engine
-│   ├── plugins/
-│   └── Dockerfile
+├── scripts/                        # bootstrap / env setup
+│   ├── setup_env.sh                # first-time setup (uv venv + abctl install)
+│   ├── setup_env.ps1               # Windows equivalent
+│   └── requirements.txt            # dev/tooling deps
+│
+├── compose/                        # Airflow Docker Compose stack
+│   ├── docker-compose.yml
+│   ├── .env.example                # environment variable template
+│   ├── .env                        # filled-in credentials (gitignored)
+│   ├── Makefile                    # make up / make down shortcuts
+│   ├── start.bat                   # Windows startup script
+│   └── stop.bat                    # Windows shutdown script
+│
+├── airflow/                        # Airflow DAGs + Dockerfile
+│   ├── Dockerfile
+│   ├── requirements.txt            # Airflow provider deps (dbt-snowflake, airbyte provider)
+│   └── dags/
+│       └── platform_dag_factory.py # dynamic DAG engine
 │
 ├── dbt_project/                    # dbt Core project
 │   ├── dbt_project.yml
-│   ├── packages.yml
+│   ├── packages.yml                # elementary, dbt_utils, dbt_expectations, dbt_date
 │   ├── profiles.yml
 │   ├── models/
 │   │   ├── bronze/                 # GENERATED — do not edit manually
 │   │   │   └── <source>/
-│   │   │       └── <table>.sql
+│   │   │       ├── <table>.sql
+│   │   │       ├── sources.yml
+│   │   │       └── schema.yml
 │   │   └── silver/                 # GENERATED — do not edit manually
 │   │       └── <source>/
-│   │           └── <table>.sql
+│   │           ├── <table>.sql
+│   │           └── schema.yml
 │   └── macros/
-│       └── platform_macros.sql     # shared macros for generated models
+│       └── generate_schema_name.sql  # custom schema routing
 │
 └── sources/                        # human-authored config (the only one)
     └── <source_name>/
-        └── source_metadata.yml
+        ├── source_metadata.yml     # primary keys, load strategy, owner
+        └── source_schema.yml       # generated schema snapshot (do not edit)
 ```
 
 ---
@@ -1032,15 +1059,15 @@ snowflake-data-platform/
 4. Update Airflow connection `airbyte_local` with Cloud API token
 5. That is the entire migration — the platform code does not change
 
-#### Airflow (Astro CLI local) → Astronomer Cloud
+#### Airflow (Docker Compose) → Astronomer Cloud / MWAA
 
 **Effort: 1–2 days**
 
-1. Create Astronomer Cloud workspace and deployment
-2. Run `astro deploy` to push DAGs and dependencies
-3. Re-create Airflow connections (Airbyte, Snowflake) in Astronomer UI
-4. Update environment variables in Astronomer deployment settings
-5. Note: Dynamic DAG pattern works identically in Astronomer Cloud
+1. Create Astronomer Cloud workspace and deployment (or configure MWAA environment)
+2. Push DAGs and `airflow/requirements.txt` to the deployment
+3. Re-create Airflow connections (Airbyte, Snowflake) in cloud UI or via environment variables
+4. Update `compose/.env` equivalents in cloud secrets manager
+5. Note: Dynamic DAG pattern works identically in Astronomer Cloud and MWAA
 
 #### dbt Core → dbt Cloud
 
@@ -1048,12 +1075,12 @@ snowflake-data-platform/
 
 1. Connect dbt Cloud to your git repo
 2. Create environments (dev, prod) pointing to Snowflake
-3. Update the DAG engine: replace `dbt_core_run` tasks with `dbt Cloud job trigger` via the dbt Cloud API
-4. Astronomer Cosmos supports dbt Cloud as a backend — minimal DAG changes
+3. Update the DAG engine: replace shell-based dbt tasks with dbt Cloud job trigger via the dbt Cloud API
+4. Astronomer Cosmos can also wrap dbt Core tasks natively — a future upgrade path
 
 #### What Does NOT Change
 
-- All platform Python code (catalog syncer, generators, evolution handler)
+- All `sgdp/` Python code (catalog syncer, generators, evolution handler)
 - All generated dbt models
 - All `source_metadata.yml` files
 - Snowflake structure, RBAC, and layer design
@@ -1062,13 +1089,13 @@ snowflake-data-platform/
 ### Cloud Migration Checklist
 
 ```
-□ Update AIRBYTE_API_URL in .env / cloud secrets manager
-□ Update AIRFLOW_HOST in .env
+□ Update AIRBYTE_CLIENT_ID / AIRBYTE_CLIENT_SECRET for Airbyte Cloud
+□ Update Airflow connection vars in cloud secrets manager
 □ Re-create Airflow connections (Airbyte, Snowflake) in cloud UI
-□ Push DAGs via astro deploy (Astronomer) or zip upload (MWAA)
+□ Push DAGs + airflow/requirements.txt to cloud Airflow deployment
 □ Connect dbt Cloud to git repo (if migrating dbt)
 □ Update DAG engine to use dbt Cloud job trigger (if migrating dbt)
-□ Verify Elementary report destination (local file → Elementary Cloud or S3)
+□ Verify Elementary report destination (local → Elementary Cloud or S3)
 □ Run platform validate in cloud environment
 □ Run smoke test: platform sync <one_source>
 ```
@@ -1089,4 +1116,4 @@ snowflake-data-platform/
 
 ---
 
-*End of specification. Generated models live in `dbt_project/models/`. Human config lives in `sources/`. Everything else is platform.*
+*End of specification. Generated models live in `dbt_project/models/`. Human config lives in `sources/`. Platform code lives in `sgdp/`. Everything else is generated.*
