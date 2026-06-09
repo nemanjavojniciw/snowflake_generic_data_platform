@@ -130,7 +130,7 @@ The script will:
 2. Install `scripts/requirements.txt` via `uv pip install`
 3. Install the `platform` CLI via `uv pip install -e .`
 4. Copy `compose/.env.example` → `compose/.env` (if not present)
-5. Run `abctl local install` to deploy Airbyte (~5 min on first run)
+5. Run `abctl local install` to deploy Airbyte (~20 min on first run)
 
 ### After the Bootstrap Script
 
